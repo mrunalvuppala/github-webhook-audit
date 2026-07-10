@@ -146,6 +146,15 @@ demo.bat                     # Double-click to demo
 
 ---
 
+## Documentation
+
+Full technical and enterprise integration guide:
+
+- **[docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md)** — architecture, testing, enterprise & public company integration
+- Double-click **`download-docs.bat`** to copy the document to your Desktop
+
+---
+
 ## GitHub repo
 
 [github.com/mrunalvuppala/github-webhook-audit](https://github.com/mrunalvuppala/github-webhook-audit)
