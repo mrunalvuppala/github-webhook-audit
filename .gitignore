@@ -17,3 +17,6 @@ venv/
 canvases/
 mcps/
 terminals/
+
+# Docker
+.docker/

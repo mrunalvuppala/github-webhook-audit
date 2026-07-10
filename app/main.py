@@ -78,7 +78,18 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Audit API Gateway", lifespan=lifespan)
+app = FastAPI(
+    title="AgentAuditAI",
+    description="GitHub webhook gateway with asynchronous credential auditing.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+@app.get("/health")
+async def health_check() -> dict[str, str]:
+    """Simple health endpoint for demos and load balancers."""
+    return {"status": "ok", "service": "AgentAuditAI"}
 
 
 @app.post(
