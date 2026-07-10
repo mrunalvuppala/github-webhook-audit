@@ -339,6 +339,7 @@ def build_document(images: dict[str, Path]) -> Document:
         "9. API Reference",
         "10. Troubleshooting",
         "11. Roadmap & Extensions",
+        "12. Technology Stack & Rationale",
         "Appendix A — Environment Template",
         "Appendix B — Support",
     ]
@@ -526,6 +527,74 @@ def build_document(images: dict[str, Path]) -> Document:
         ["v2.0", "Real database persistence"],
         ["v2.1", "Admin UI for policy management"],
     ])
+
+    # Section 12
+    doc.add_page_break()
+    add_heading(doc, "12. Technology Stack & Rationale", 1)
+    add_body(doc, "This section explains every major technology used in AgentAuditAI and the engineering reasons behind each choice.")
+
+    add_heading(doc, "Core Language — Python 3.12", 2)
+    add_table(doc, ["Aspect", "Detail"], [
+        ["Used for", "API gateway, audit engine, workers, configuration"],
+        ["Why chosen", "Mature security tooling ecosystem, fast development, strong regex/HMAC support"],
+        ["Enterprise fit", "Easy hiring, SIEM/vault/CI integration, consistent Docker deployment"],
+    ])
+
+    add_heading(doc, "API Layer", 2)
+    add_table(doc, ["Technology", "Used For", "Why Chosen"], [
+        ["FastAPI", "Webhook gateway, demo UI, health, docs", "Async performance, validation, built-in Swagger"],
+        ["Uvicorn", "ASGI server", "Lightweight, production-ready FastAPI hosting"],
+    ])
+
+    add_heading(doc, "Configuration Management", 2)
+    add_table(doc, ["Technology", "Used For", "Why Chosen"], [
+        ["Pydantic v2 + pydantic-settings", "Environment variable loading", "Type-safe validation, SecretStr for secrets"],
+        ["python-dotenv", "Local .env loading", "Keeps secrets out of source code"],
+    ])
+
+    add_heading(doc, "Security & Audit Engine", 2)
+    add_table(doc, ["Technology", "Used For", "Why Chosen"], [
+        ["HMAC + hashlib", "GitHub signature verification", "Constant-time compare, no extra dependencies"],
+        ["Compiled regex (re)", "Credential pattern detection", "Fast, stateless, auditable rules"],
+        ["gc (garbage collector)", "Memory purge after audit", "Enforces no-retention compliance policy"],
+    ])
+
+    add_heading(doc, "Background Processing", 2)
+    add_table(doc, ["Technology", "Used For", "Why Chosen"], [
+        ["Celery", "execute_asynchronous_audit task", "Industry-standard async task queue"],
+        ["Redis", "Celery broker/backend", "Fast, scalable, enterprise-proven message broker"],
+    ])
+
+    add_heading(doc, "Data, Frontend & Deployment", 2)
+    add_table(doc, ["Technology", "Used For", "Why Chosen"], [
+        ["PostgreSQL", "Tenant config + audit metadata", "Enterprise-standard RDBMS with audit support"],
+        ["HTML + JavaScript", "Demo UI dashboard", "Zero build step, presentation-ready"],
+        ["Docker + Docker Compose", "API + Redis + Worker stack", "One-command reproducible deployment"],
+        ["python-docx + matplotlib", "Word docs with diagrams", "Stakeholder-ready visual deliverables"],
+    ])
+
+    add_heading(doc, "Why This Stack Fits Enterprise & Public Companies", 2)
+    add_table(doc, ["Organizational Need", "Technology Answer"], [
+        ["Fast webhook response", "FastAPI + async + Celery queue"],
+        ["Secret verification", "HMAC-SHA256 constant-time compare"],
+        ["No diff retention", "Stateless engine + gc.collect()"],
+        ["Config safety", "Pydantic Settings + SecretStr"],
+        ["Horizontal scalability", "Redis + multiple Celery workers"],
+        ["Compliance audit trail", "Metadata-only structured logging"],
+        ["Easy deployment", "Docker Compose"],
+        ["SIEM / vault / GHES integration", "Modular Python services"],
+    ])
+
+    add_heading(doc, "Technologies Intentionally NOT Used", 2)
+    add_table(doc, ["Technology", "Why Not Used"], [
+        ["Django", "Heavier than needed for a focused webhook API"],
+        ["Kafka", "Overkill for current queue volume; Redis is simpler"],
+        ["ML / AI scanning", "Regex is faster, explainable, and auditable"],
+        ["Storing diffs in database", "Violates data minimization policies"],
+        ["React / Vue SPA", "Unnecessary build complexity for demo UI"],
+    ])
+
+    add_body(doc, "Summary: AgentAuditAI uses a Python + FastAPI + Celery + Redis architecture to deliver a fast, compliant, asynchronously audited GitHub webhook gateway. Every technology choice prioritizes speed, explainability, data minimization, and enterprise deployability.")
 
     doc.add_page_break()
     add_heading(doc, "Appendix A — Environment Template", 1)

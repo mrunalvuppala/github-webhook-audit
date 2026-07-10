@@ -20,6 +20,7 @@
 9. [API Reference](#9-api-reference)
 10. [Troubleshooting](#10-troubleshooting)
 11. [Roadmap & Extensions](#11-roadmap--extensions)
+12. [Technology Stack & Rationale](#12-technology-stack--rationale)
 
 ---
 
@@ -595,6 +596,230 @@ docker compose down && docker compose up --build
 | v1.4 | HashiCorp Vault secret injection |
 | v2.0 | Real database persistence (replace mock callback) |
 | v2.1 | Admin UI for policy management |
+
+---
+
+## 12. Technology Stack & Rationale
+
+This section explains every major technology used in AgentAuditAI and the engineering reasons behind each choice.
+
+### 12.1 Core language
+
+#### Python 3.12
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | API gateway, audit engine, background workers, configuration, documentation tooling |
+| **Why chosen** | Mature ecosystem for security tooling, fast to develop, excellent regex/HMAC support, widely adopted in enterprise DevSecOps teams |
+| **Enterprise fit** | Easy to hire for, integrates with SIEM/vault/CI pipelines, runs consistently in Docker |
+
+---
+
+### 12.2 API layer
+
+#### FastAPI
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Webhook gateway, demo UI routes, health checks, OpenAPI docs |
+| **Why chosen** | High-performance async HTTP, automatic request validation, built-in Swagger UI at `/docs` |
+| **Project need** | GitHub webhooks require sub-second HMAC verification and immediate `202 Accepted` responses |
+
+#### Uvicorn
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | ASGI server hosting the FastAPI application |
+| **Why chosen** | Lightweight, production-ready, standard pairing with FastAPI |
+| **Project need** | Reliable local and containerized API serving on port 8000 |
+
+---
+
+### 12.3 Configuration management
+
+#### Pydantic v2 + pydantic-settings
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Loading `REDIS_URL`, `GITHUB_WEBHOOK_SECRET`, `DATABASE_URL`, and other env vars |
+| **Why chosen** | Type-safe validation at startup, `SecretStr` prevents accidental secret exposure |
+| **Project need** | Fail fast on misconfiguration; enforce required secrets before processing webhooks |
+
+#### python-dotenv
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Loading `.env` files in local development |
+| **Why chosen** | Standard developer workflow; keeps secrets out of source code |
+| **Project need** | Simple onboarding for demos and local testing |
+
+---
+
+### 12.4 Security & audit engine
+
+#### HMAC + hashlib (Python standard library)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Verifying `X-Hub-Signature-256` on incoming GitHub webhooks |
+| **Why chosen** | Native, auditable, no extra dependencies; `hmac.compare_digest` prevents timing attacks |
+| **Project need** | Reject tampered payloads before any diff content is processed |
+
+#### Compiled regex (`re` module)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Detecting AWS, Stripe, and GitLab credential patterns in diffs |
+| **Why chosen** | Fast, stateless, explainable rules — no ML black box |
+| **Project need** | Compliance teams need auditable, predictable detection logic |
+
+#### `gc` (garbage collector)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Purging diff content from memory after each audit |
+| **Why chosen** | Reinforces the no-retention policy beyond simple variable deletion |
+| **Project need** | Public company data minimization (GDPR Art. 5) and internal security policy |
+
+---
+
+### 12.5 Background processing
+
+#### Celery
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | `execute_asynchronous_audit` background task |
+| **Why chosen** | Industry-standard distributed task queue for Python |
+| **Project need** | Decouple webhook ACK from diff scanning; GitHub expects fast responses |
+
+#### Redis
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Celery message broker and result backend |
+| **Why chosen** | Fast, reliable, horizontally scalable, widely deployed in enterprises |
+| **Project need** | Queue audit jobs between API and worker with minimal latency |
+
+---
+
+### 12.6 Data & storage
+
+#### PostgreSQL (via `DATABASE_URL`)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Tenant configuration caching and audit metadata (production target) |
+| **Why chosen** | Enterprise-standard RDBMS with strong audit and compliance track record |
+| **Project need** | Multi-tenant policy storage with structured query and reporting |
+
+#### Mock metadata callback (current implementation)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Simulating persistence of audit outcomes during development |
+| **Why chosen** | Keeps the demo self-contained; easy to replace with Jira, ServiceNow, or SIEM |
+| **Project need** | Show end-to-end pipeline without locking into one enterprise system |
+
+---
+
+### 12.7 Frontend & demo tooling
+
+#### HTML + JavaScript (static dashboard)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Browser UI at `/` for live demos and QA |
+| **Why chosen** | Zero build step, instant load, calls `/v1/demo/audit` for real-time results |
+| **Project need** | Presentation-ready interface for stakeholders and security reviewers |
+
+#### Batch scripts (`start.bat`, `restart.bat`, `demo.bat`)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | One-click startup, restart, and CLI demo on Windows |
+| **Why chosen** | Reduces friction for non-CLI users during demos |
+| **Project need** | Fast, repeatable demonstrations in enterprise meetings |
+
+---
+
+### 12.8 Deployment & operations
+
+#### Docker + Docker Compose
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Running API, Redis, and Worker as a unified stack |
+| **Why chosen** | Reproducible environments, matches enterprise microservice deployment patterns |
+| **Project need** | One-command startup; eliminates local dependency conflicts |
+
+#### Dockerfile (Python 3.12-slim)
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Container image for API and worker services |
+| **Why chosen** | Small image size, consistent Python runtime across environments |
+| **Project need** | Portable builds for cloud and on-premises enterprise deployment |
+
+---
+
+### 12.9 Documentation tooling
+
+#### python-docx + matplotlib
+
+| Aspect | Detail |
+|---|---|
+| **Used for** | Generating Word documentation with embedded architecture diagrams |
+| **Why chosen** | Produces stakeholder-ready `.docx` deliverables with visual pages |
+| **Project need** | Compliance officers and executives need formatted documents, not just README files |
+
+---
+
+### 12.10 Architecture technology map
+
+```mermaid
+flowchart LR
+    GH[GitHub] --> FastAPI[FastAPI + Uvicorn]
+    FastAPI --> Redis[Redis]
+    Redis --> Celery[Celery Worker]
+    Celery --> Engine[Regex Audit Engine]
+    Engine --> Meta[Metadata / Logs]
+    Config[Pydantic Settings] --> FastAPI
+    Config --> Celery
+```
+
+---
+
+### 12.11 Why this stack fits enterprise & public companies
+
+| Organizational need | Technology answer |
+|---|---|
+| Fast webhook response | FastAPI + async + Celery queue |
+| Secret verification | HMAC-SHA256 with constant-time compare |
+| No diff retention | Stateless engine + `gc.collect()` |
+| Config safety | Pydantic Settings + `SecretStr` |
+| Horizontal scalability | Redis + multiple Celery workers |
+| Compliance audit trail | Metadata-only structured logging |
+| Easy deployment | Docker Compose |
+| SIEM / vault / GHES integration | Modular Python services |
+
+---
+
+### 12.12 Technologies intentionally NOT used
+
+| Technology | Why not used |
+|---|---|
+| **Django** | Heavier than needed for a focused webhook API |
+| **Kafka** | Overkill for current queue volume; Redis is simpler to operate |
+| **ML / AI scanning** | Regex is faster, explainable, and auditable for known credential formats |
+| **Storing diffs in a database** | Violates data minimization and compliance retention policies |
+| **React / Vue SPA** | Unnecessary build complexity for a demo dashboard |
+
+---
+
+### 12.13 Summary
+
+AgentAuditAI uses a **Python + FastAPI + Celery + Redis** architecture to deliver a **fast, compliant, asynchronously audited GitHub webhook gateway**. Every technology choice prioritizes **speed, explainability, data minimization, and enterprise deployability** over unnecessary complexity.
 
 ---
 
