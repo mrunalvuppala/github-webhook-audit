@@ -44,7 +44,13 @@ Or from terminal:
 docker compose up --build
 ```
 
-### Step 2 — Open the API docs (great for demos)
+### Step 2 — Open the demo UI (best for presentations)
+
+[http://localhost:8000](http://localhost:8000)
+
+Click the example buttons, then **Run audit** for instant PASS/FAIL results in the browser.
+
+Or use the API docs:
 
 [http://localhost:8000/docs](http://localhost:8000/docs)
 
@@ -70,6 +76,7 @@ The demo sends 3 webhook scenarios and shows HTTP responses. Audit results appea
 
 | What to show | URL / Command |
 |---|---|
+| **Demo UI dashboard** | [http://localhost:8000](http://localhost:8000) |
 | Interactive API docs | [http://localhost:8000/docs](http://localhost:8000/docs) |
 | Health check | [http://localhost:8000/health](http://localhost:8000/health) |
 | Webhook endpoint | `POST /v1/webhooks/github` |

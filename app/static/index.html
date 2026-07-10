@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentAuditAI</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #141b2d;
+      --border: #243049;
+      --text: #e8eefc;
+      --muted: #9aa8c7;
+      --accent: #4f8cff;
+      --pass: #22c55e;
+      --fail: #ef4444;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, Segoe UI, Arial, sans-serif;
+      background: linear-gradient(180deg, #0b1020 0%, #10182b 100%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 20px 48px; }
+    .hero {
+      display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+    h1 { margin: 0; font-size: 2rem; }
+    .subtitle { color: var(--muted); margin-top: 8px; }
+    .badge {
+      padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border);
+      background: rgba(79, 140, 255, 0.12); color: #b9d0ff; font-size: 0.9rem;
+    }
+    .grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+    .card h2 { margin: 0 0 12px; font-size: 1.1rem; }
+    textarea {
+      width: 100%; min-height: 220px; resize: vertical; border-radius: 12px; border: 1px solid var(--border);
+      background: #0d1424; color: var(--text); padding: 14px; font-family: Consolas, monospace; font-size: 0.92rem;
+    }
+    .examples { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 16px; }
+    button {
+      border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 600;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-secondary { background: #1d2840; color: var(--text); border: 1px solid var(--border); }
+    .btn-example { background: #18233a; color: #d7e4ff; border: 1px solid var(--border); }
+    .result {
+      min-height: 260px; border-radius: 12px; border: 1px solid var(--border); background: #0d1424;
+      padding: 16px; font-family: Consolas, monospace; font-size: 0.9rem; white-space: pre-wrap;
+    }
+    .status {
+      display: inline-block; padding: 6px 10px; border-radius: 8px; font-weight: 700; margin-bottom: 12px;
+    }
+    .status.pass { background: rgba(34,197,94,0.15); color: var(--pass); }
+    .status.fail { background: rgba(239,68,68,0.15); color: var(--fail); }
+    .meta { color: var(--muted); font-size: 0.92rem; line-height: 1.6; }
+    .links { margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+    .links a { color: #9ec1ff; text-decoration: none; }
+    .violation {
+      border-left: 3px solid var(--warn); padding: 8px 10px; margin: 8px 0; background: rgba(245,158,11,0.08);
+    }
+    .violation.high { border-left-color: var(--fail); background: rgba(239,68,68,0.08); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <h1>AgentAuditAI</h1>
+        <div class="subtitle">Scan code diffs for leaked credentials — live demo dashboard</div>
+      </div>
+      <div class="badge" id="healthBadge">Checking API...</div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Diff input</h2>
+        <div class="examples">
+          <button class="btn-example" data-example="clean">Clean code</button>
+          <button class="btn-example" data-example="aws">AWS key leak</button>
+          <button class="btn-example" data-example="stripe">Stripe key leak</button>
+          <button class="btn-example" data-example="gitlab">GitLab token leak</button>
+        </div>
+        <textarea id="diffInput">+def hello():
++    return "world"
+</textarea>
+        <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn-primary" id="runAuditBtn">Run audit</button>
+          <button class="btn-secondary" id="queueWebhookBtn">Queue via webhook flow</button>
+        </div>
+        <p class="meta" style="margin-top:12px;">
+          <strong>Run audit</strong> shows instant results in the UI.
+          <strong>Queue via webhook flow</strong> sends the payload through the real GitHub webhook + Celery path.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>Audit result</h2>
+        <div id="resultPanel" class="result">Run an example to see results here.</div>
+        <div class="links">
+          <a href="/docs" target="_blank">API docs</a>
+          <a href="/health" target="_blank">Health check</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const examples = {
+      clean: "+def hello():\n+    return \"world\"\n",
+      aws: "+AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n",
+      stripe: "+stripe_key = 'sk_live_abcdefghijklmnopqrstuv'\n",
+      gitlab: "+token = 'glpat-abcdefghijklmnopqrstuvwxyz12'\n",
+    };
+
+    const diffInput = document.getElementById("diffInput");
+    const resultPanel = document.getElementById("resultPanel");
+    const healthBadge = document.getElementById("healthBadge");
+
+    async function checkHealth() {
+      try {
+        const res = await fetch("/health");
+        const data = await res.json();
+        healthBadge.textContent = data.status === "ok" ? "API online" : "API issue";
+      } catch {
+        healthBadge.textContent = "API offline";
+      }
+    }
+
+    function renderAuditResult(data) {
+      const statusClass = data.status === "PASS" ? "pass" : "fail";
+      let html = `<div class="status ${statusClass}">${data.status}</div>`;
+      html += `High risk detected: ${data.high_risk_detected ? "YES" : "NO"}\n`;
+      html += `Violations: ${data.violations.length}\n\n`;
+
+      if (data.violations.length === 0) {
+        html += "No credential leaks detected.";
+      } else {
+        data.violations.forEach(v => {
+          const cls = v.risk_level === "high" ? "violation high" : "violation";
+          html += `<div class="${cls}">Line ${v.line} · ${v.rule} · ${v.risk_level} risk</div>`;
+        });
+      }
+
+      resultPanel.innerHTML = html;
+    }
+
+    document.querySelectorAll("[data-example]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        diffInput.value = examples[btn.dataset.example];
+      });
+    });
+
+    document.getElementById("runAuditBtn").addEventListener("click", async () => {
+      resultPanel.textContent = "Running audit...";
+      try {
+        const res = await fetch("/v1/demo/audit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ diff: diffInput.value }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Audit failed");
+        renderAuditResult(data);
+      } catch (err) {
+        resultPanel.textContent = `Error: ${err.message}`;
+      }
+    });
+
+    document.getElementById("queueWebhookBtn").addEventListener("click", async () => {
+      resultPanel.textContent = "Queueing webhook...";
+      try {
+        const res = await fetch("/v1/demo/webhook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tenant_id: "demo-tenant",
+            installation_id: "4242",
+            diff: diffInput.value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Webhook failed");
+        resultPanel.textContent =
+          `Webhook accepted (${data.status})\n` +
+          `Tenant: ${data.tenant_id}\n` +
+          `Installation: ${data.installation_id}\n\n` +
+          `Check the Celery worker terminal for background audit results.`;
+      } catch (err) {
+        resultPanel.textContent = `Error: ${err.message}`;
+      }
+    });
+
+    checkHealth();
+  </script>
+</body>
+</html>

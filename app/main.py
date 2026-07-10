@@ -9,12 +9,28 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
+from app.services.audit_engine import AuditResult, StatelessAuditEngine
 from app.workers.tasks import execute_asynchronous_audit
 
 logger = logging.getLogger(__name__)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+class DemoAuditRequest(BaseModel):
+    diff: str = Field(description="Unified diff content to inspect.")
+
+
+class DemoWebhookRequest(BaseModel):
+    tenant_id: str = "demo-tenant"
+    installation_id: str = "4242"
+    diff: str = Field(description="Unified diff content to queue for audit.")
 
 
 def _verify_github_signature(
@@ -90,6 +106,49 @@ app = FastAPI(
 async def health_check() -> dict[str, str]:
     """Simple health endpoint for demos and load balancers."""
     return {"status": "ok", "service": "AgentAuditAI"}
+
+
+@app.get("/")
+async def dashboard() -> FileResponse:
+    """Presentation dashboard for live credential audit demos."""
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.post("/v1/demo/audit", response_model=AuditResult)
+async def demo_audit(request: DemoAuditRequest) -> AuditResult:
+    """Run a synchronous audit for the browser demo UI."""
+    settings = get_settings()
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Demo endpoints are only available in development mode",
+        )
+
+    engine = StatelessAuditEngine()
+    return engine.inspect_diff(request.diff)
+
+
+@app.post("/v1/demo/webhook")
+async def demo_webhook(request: DemoWebhookRequest) -> dict[str, str]:
+    """Queue a demo payload through the real webhook + Celery path."""
+    settings = get_settings()
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Demo endpoints are only available in development mode",
+        )
+
+    execute_asynchronous_audit.delay(
+        request.tenant_id,
+        request.installation_id,
+        request.diff,
+    )
+
+    return {
+        "status": "accepted",
+        "tenant_id": request.tenant_id,
+        "installation_id": request.installation_id,
+    }
 
 
 @app.post(
