@@ -1,0 +1,19 @@
+# Secrets and local env
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tooling / IDE
+.idea/
+.vscode/
+*.swp
+
+# Cursor workspace artifacts
+canvases/
+mcps/
+terminals/
