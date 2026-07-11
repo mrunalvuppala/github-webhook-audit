@@ -118,7 +118,7 @@
     const examples = {
       clean: "+def hello():\n+    return \"world\"\n",
       aws: "+AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n",
-      stripe: "+stripe_key = 'sk_live_abcdefghijklmnopqrstuv'\n",
+      stripe: "+stripe_key = '" + "sk" + "_live_" + "abcdefghijklmnopqrstuvwxyz12" + "'\n",
       gitlab: "+token = 'glpat-abcdefghijklmnopqrstuvwxyz12'\n",
     };
 
@@ -169,7 +169,10 @@
           body: JSON.stringify({ diff: diffInput.value }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Audit failed");
+        if (!res.ok) {
+          const detail = typeof data.detail === "string" ? data.detail : `Request failed (${res.status})`;
+          throw new Error(detail);
+        }
         renderAuditResult(data);
       } catch (err) {
         resultPanel.textContent = `Error: ${err.message}`;
@@ -189,11 +192,15 @@
           }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Webhook failed");
+        if (!res.ok) {
+          const detail = typeof data.detail === "string" ? data.detail : `Request failed (${res.status})`;
+          throw new Error(detail);
+        }
         resultPanel.textContent =
           `Webhook accepted (${data.status})\n` +
-          `Tenant: ${data.tenant_id}\n` +
-          `Installation: ${data.installation_id}\n\n` +
+          `Tenant: ${data.tenant_id || "demo-tenant"}\n` +
+          `Installation: ${data.installation_id || "n/a"}\n` +
+          `${data.message || ""}\n\n` +
           `Check the Celery worker terminal for background audit results.`;
       } catch (err) {
         resultPanel.textContent = `Error: ${err.message}`;

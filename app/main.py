@@ -21,7 +21,14 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
 from app.database import check_database_connection, initialize_database
-from app.schemas import HealthResponse, ScanRequest, ScanResponse, WebhookAcceptedResponse
+from app.schemas import (
+    DemoAuditRequest,
+    DemoAuditResponse,
+    HealthResponse,
+    ScanRequest,
+    ScanResponse,
+    WebhookAcceptedResponse,
+)
 from app.services.security_engine import SecurityEngine
 from app.tasks import process_github_webhook_audit
 
@@ -31,11 +38,33 @@ _security_engine = SecurityEngine()
 
 
 class DemoWebhookRequest(BaseModel):
+    tenant_id: str = "demo-tenant"
     installation_id: str = "4242"
     diff: str = Field(description="Unified diff content to queue for audit.")
     repository_name: str = "demo-org/demo-repo"
     pull_request_number: int | None = None
     commit_sha: str | None = None
+
+
+def _to_demo_audit_result(scan: ScanResponse) -> DemoAuditResponse:
+    violations: list[dict[str, Any]] = []
+    for item in scan.violations:
+        risk_level = "high" if item.get("category") == "secret" else "medium"
+        violations.append(
+            {
+                "line": item.get("line"),
+                "rule": item.get("rule"),
+                "risk_level": risk_level,
+                "detail": item.get("detail"),
+            }
+        )
+
+    high_risk_detected = any(v["risk_level"] == "high" for v in violations)
+    return DemoAuditResponse(
+        status="FAIL" if scan.status == "blocked" else "PASS",
+        violations=violations,
+        high_risk_detected=high_risk_detected,
+    )
 
 
 def _verify_github_signature(
@@ -138,6 +167,20 @@ async def scan_files(request: ScanRequest) -> ScanResponse:
     return _security_engine.scan_files(request.files)
 
 
+@app.post("/v1/demo/audit", response_model=DemoAuditResponse)
+async def demo_audit(request: DemoAuditRequest) -> DemoAuditResponse:
+    """Run a synchronous audit for the browser demo UI."""
+    settings = get_settings()
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Demo endpoints are only available in development mode",
+        )
+
+    scan_result = _security_engine.scan_diff(request.diff)
+    return _to_demo_audit_result(scan_result)
+
+
 @app.post("/v1/demo/webhook", response_model=WebhookAcceptedResponse)
 async def demo_webhook(request: DemoWebhookRequest) -> WebhookAcceptedResponse:
     settings = get_settings()
@@ -157,7 +200,10 @@ async def demo_webhook(request: DemoWebhookRequest) -> WebhookAcceptedResponse:
     }
 
     process_github_webhook_audit.delay(request.installation_id, payload)
-    return WebhookAcceptedResponse()
+    return WebhookAcceptedResponse(
+        installation_id=request.installation_id,
+        tenant_id=request.tenant_id,
+    )
 
 
 @app.post(

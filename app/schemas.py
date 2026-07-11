@@ -65,3 +65,15 @@ class ScanAuditLogRead(BaseModel):
 class WebhookAcceptedResponse(BaseModel):
     status: str = "accepted"
     message: str = "Webhook queued for asynchronous processing"
+    installation_id: str | None = None
+    tenant_id: str | None = None
+
+
+class DemoAuditRequest(BaseModel):
+    diff: str = Field(description="Unified diff content to inspect.")
+
+
+class DemoAuditResponse(BaseModel):
+    status: str = Field(description='Audit verdict: "PASS" or "FAIL".')
+    violations: list[dict[str, Any]] = Field(default_factory=list)
+    high_risk_detected: bool = False
