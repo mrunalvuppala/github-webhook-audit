@@ -1,9 +1,11 @@
-# AgentAuditAI — Complete Project & Technical Documentation
+# AgentAudit AI — Complete Project & Technical Documentation
 
-**Version:** 1.0.0  
+**Version:** 2.0.0  
 **Author:** Naga Sai Mrunal Vuppala ([@mrunalvuppala](https://github.com/mrunalvuppala))  
 **Repository:** [github.com/mrunalvuppala/github-webhook-audit](https://github.com/mrunalvuppala/github-webhook-audit)  
 **Last Updated:** July 2026
+
+> **Architecture designed, engineered, and maintained by Naga Sai Mrunal Vuppala.**
 
 ---
 
@@ -12,59 +14,84 @@
 1. [Executive Summary](#1-executive-summary)
 2. [System Architecture](#2-system-architecture)
 3. [Component Reference](#3-component-reference)
-4. [Security & Compliance Design](#4-security--compliance-design)
-5. [Installation & Operations](#5-installation--operations)
-6. [Testing Guide](#6-testing-guide)
-7. [Enterprise Integration](#7-enterprise-integration)
-8. [Public Company Integration](#8-public-company-integration)
-9. [API Reference](#9-api-reference)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Roadmap & Extensions](#11-roadmap--extensions)
-12. [Technology Stack & Rationale](#12-technology-stack--rationale)
+4. [Database & Multi-Tenant Isolation](#4-database--multi-tenant-isolation)
+5. [Security & Compliance Design](#5-security--compliance-design)
+6. [Installation & Operations](#6-installation--operations)
+7. [Testing Guide](#7-testing-guide)
+8. [Enterprise Integration](#8-enterprise-integration)
+9. [Public Company Integration](#9-public-company-integration)
+10. [API Reference](#10-api-reference)
+11. [Troubleshooting](#11-troubleshooting)
+12. [Roadmap & Extensions](#12-roadmap--extensions)
+13. [Technology Stack & Rationale](#13-technology-stack--rationale)
 
 ---
 
 ## 1. Executive Summary
 
-**AgentAuditAI** is a compliance-oriented GitHub webhook gateway that verifies incoming events, queues asynchronous credential audits, and returns immediate acknowledgment to GitHub. It is designed for organizations that must prevent secret leakage in code while meeting strict data retention and privacy requirements.
+**AgentAudit AI** is a production-grade, multi-tenant GitHub webhook security platform. It verifies signed webhook events, queues asynchronous security scans, persists tenant-isolated audit metadata in PostgreSQL, and returns immediate `202 Accepted` responses to GitHub.
 
 ### Key capabilities
 
 | Capability | Description |
 |---|---|
-| Webhook verification | HMAC-SHA256 signature validation via `X-Hub-Signature-256` |
-| Asynchronous auditing | Celery workers process diffs in the background |
-| Credential detection | AWS, Stripe, and GitLab token patterns |
-| Memory safety | Diff content is never logged, stored, or retained beyond local scope |
-| Multi-tenant ready | Supports `tenant_id` and GitHub `installation` metadata |
-| Demo UI | Browser dashboard for live presentations and QA |
+| Webhook verification | HMAC-SHA256 constant-time validation via `X-Hub-Signature-256` |
+| Asynchronous processing | Celery workers backed by Redis |
+| Secret detection | AWS, Stripe, GitLab, and generic API token patterns |
+| AST validation | Dangerous `eval()`, `exec()`, `os.system()`, `subprocess.*` calls |
+| Multi-tenant persistence | PostgreSQL with Row-Level Security (RLS) on audit logs |
+| Demo UI | Browser dashboard for live PASS/FAIL demonstrations |
+| Pre-commit client | Optional git hook scanning staged files via `/v1/scan` |
 
 ### Technology stack
 
 | Layer | Technology |
 |---|---|
 | API Gateway | FastAPI + Uvicorn |
-| Configuration | Pydantic Settings v2 |
+| Configuration | Pydantic Settings v2 (`app/config.py`) |
 | Task Queue | Celery + Redis |
-| Audit Engine | Stateless regex scanner (Python) |
-| Deployment | Docker Compose |
+| Database | PostgreSQL 16 + SQLAlchemy 2.0 |
+| Scan Engine | `SecurityEngine` + `ASTParser` (tree-sitter + regex) |
+| Migrations | Alembic |
+| Deployment | Docker Compose (4 services) |
+| License | Business Source License 1.1 |
 
 ---
 
 ## 2. System Architecture
 
-### High-level data flow
+### High-level topology
+
+```
+GitHub Webhook ──► FastAPI Web (:8000)
+                      │ HMAC verify
+                      │ Return 202 (<50ms)
+                      ▼
+                   Redis (:6379)
+                      │
+                      ▼
+                 Celery Worker
+                      │ SET LOCAL tenant context
+                      │ SecurityEngine.scan_diff()
+                      ▼
+              PostgreSQL (:5432)
+              organizations + scan_audit_logs (RLS)
+```
+
+### Mermaid data flow
 
 ```mermaid
 flowchart TB
     subgraph External
         GH[GitHub / GitHub Enterprise]
+        CLI[Developer CLI / Pre-commit]
     end
 
-    subgraph Gateway["API Gateway (FastAPI)"]
+    subgraph Gateway["FastAPI Web Service"]
         WH["POST /v1/webhooks/github"]
+        SCAN["POST /v1/scan"]
+        DEMO["POST /v1/demo/audit"]
         HMAC[HMAC-SHA256 Verify]
-        PARSE[Parse tenant + installation]
     end
 
     subgraph Queue["Message Broker"]
@@ -73,139 +100,199 @@ flowchart TB
 
     subgraph Workers["Background Processing"]
         CELERY[Celery Worker]
-        ENGINE[StatelessAuditEngine]
+        ENGINE[SecurityEngine + ASTParser]
+        RLS[SET LOCAL tenant context]
     end
 
-    subgraph Storage["Metadata Only"]
-        DB[(Tenant Config DB)]
-        LOGS[Structured Logs]
+    subgraph Storage["PostgreSQL"]
+        ORG[(organizations)]
+        LOGS[(scan_audit_logs + RLS)]
     end
 
-    subgraph Demo["Development UI"]
+    subgraph DemoUI["Browser Dashboard"]
         UI["GET /"]
-        DEMO["POST /v1/demo/audit"]
     end
 
     GH -->|Signed webhook| WH
+    CLI --> SCAN
     WH --> HMAC
     HMAC -->|403 if invalid| GH
     HMAC -->|202 Accepted| GH
-    HMAC --> PARSE
-    PARSE -->|delay()| REDIS
+    HMAC -->|delay()| REDIS
     REDIS --> CELERY
     CELERY --> ENGINE
-    ENGINE -->|metadata only| DB
-    ENGINE -->|metadata only| LOGS
+    CELERY --> RLS
+    RLS --> LOGS
+    CELERY --> ORG
     UI --> DEMO
     DEMO --> ENGINE
 ```
 
-### Request lifecycle (production webhook)
+### Production webhook lifecycle
 
 1. GitHub delivers `POST /v1/webhooks/github` with raw JSON body.
-2. Gateway reads **raw bytes** (`await request.body()`) to preserve signature integrity.
-3. `GITHUB_WEBHOOK_SECRET` is used to compute expected `sha256=` digest.
+2. Gateway reads **raw bytes** to preserve signature integrity.
+3. `GITHUB_WEBHOOK_SECRET` computes expected `sha256=` digest.
 4. `hmac.compare_digest` performs constant-time comparison.
-5. On success, JSON is parsed for `tenant_id`, `installation.id`, and `diff`.
-6. `execute_asynchronous_audit.delay()` enqueues the job.
+5. On success, `installation.id` is extracted from the payload.
+6. `process_github_webhook_audit.delay()` enqueues the job on the `agentaudit` Celery queue.
 7. Gateway returns **HTTP 202 Accepted** immediately.
-8. Worker runs `StatelessAuditEngine.inspect_diff()`.
-9. Only audit **metadata** is logged and persisted.
+8. Worker resolves or creates an `Organization` record.
+9. Worker executes `SET LOCAL app.current_organization_id` for RLS.
+10. `SecurityEngine.scan_diff()` inspects added diff lines.
+11. A `ScanAuditLog` row is inserted under tenant isolation.
+12. Diff content is purged from memory; only metadata is retained.
 
 ---
 
 ## 3. Component Reference
 
-### 3.1 Configuration layer — `app/core/config.py`
-
-Loads environment variables via `pydantic-settings`.
+### 3.1 Configuration — `app/config.py`
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
+| `DATABASE_URL` | Yes | `postgresql://agentaudit:agentaudit@localhost:5432/agentaudit` | PostgreSQL connection |
 | `REDIS_URL` | No | `redis://localhost:6379/0` | Celery broker/backend |
-| `GITHUB_WEBHOOK_SECRET` | **Yes** | — | Webhook HMAC secret |
-| `DATABASE_URL` | **Yes** | — | Tenant configuration cache |
-| `MEMORY_RETENTION_LIMIT_MB` | No | `50` | Parsing memory ceiling |
-| `ENVIRONMENT` | No | `development` | `development` / `staging` / `production` |
+| `GITHUB_WEBHOOK_SECRET` | Yes | — | Webhook HMAC secret |
+| `SECRET_KEY` | Yes | — | Application cryptographic secret |
+| `SECURITY_ENVIRONMENT` | No | `development` | `development` enables demo endpoints |
 
-Development safety: prints a warning when running in development with a non-production database URL (no credentials exposed).
+### 3.2 Database layer — `app/database.py` + `app/models.py`
 
-### 3.2 Audit engine — `app/services/audit_engine.py`
+| Model | Purpose |
+|---|---|
+| `Organization` | Tenant record keyed by `github_installation_id` |
+| `ScanAuditLog` | Immutable audit trail with JSONB vulnerability payloads |
 
-**Class:** `StatelessAuditEngine`  
-**Output schema:** `AuditResult`
+Default `author_metadata` on all records: `{"creator": "Naga Sai Mrunal Vuppala"}`.
 
-```python
-class AuditResult:
-    status: str              # "PASS" or "FAIL"
-    violations: list[dict] # line, rule, risk_level
-    high_risk_detected: bool
-```
+### 3.3 Security engine — `app/services/security_engine.py`
 
-#### Detection rules
+Combines regex secret scanning with `ASTParser` (tree-sitter + Python `ast` module).
 
-| Rule ID | Pattern | Risk |
-|---|---|---|
-| `aws_access_key_id` | `AKIA[0-9A-Z]{16}` | High |
-| `aws_secret_access_key` | AWS secret key assignment | High |
-| `stripe_live_secret_key` | `sk_live_*` | High |
-| `stripe_live_restricted_key` | `rk_live_*` | High |
-| `stripe_test_secret_key` | `sk_test_*` | Medium |
-| `gitlab_access_token` | `glpat-*` | High |
+| Category | Examples detected |
+|---|---|
+| Secrets | AWS `AKIA...`, Stripe `sk_live_...`, GitLab `glpat-...` |
+| AST | `eval()`, `exec()`, `os.system()`, `subprocess.run()` |
 
-#### Memory compliance (critical)
+Memory compliance: diff content cleared in `finally` blocks with `gc.collect()`.
 
-- `diff_content` never assigned to instance/module scope
-- Never printed or logged
-- Line buffers cleared in `finally` block
-- `gc.collect()` invoked after purge
+### 3.4 Background workers — `app/tasks.py`
 
-### 3.3 Background workers — `app/workers/tasks.py`
+| Item | Value |
+|---|---|
+| Celery app | `agentaudit` |
+| Task | `process_github_webhook_audit(installation_id, payload)` |
+| Queue | `agentaudit` (isolated from other local Celery instances) |
+| Tenant binding | `SET LOCAL app.current_organization_id = :org_id` before DB writes |
 
-**Celery app:** `celery_app`  
-**Task:** `execute_asynchronous_audit(tenant_id, installation_id, diff_payload)`
-
-Logs only: `status`, `violation_count`, `high_risk_detected`, `tenant_id`, `installation_id`.
-
-### 3.4 API gateway — `app/main.py`
+### 3.5 API gateway — `app/main.py`
 
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/` | GET | Demo UI dashboard |
-| `/health` | GET | Health check |
+| `/health` | GET | Health check (DB + Redis status) |
 | `/docs` | GET | Swagger UI |
 | `/v1/webhooks/github` | POST | Production webhook ingress |
-| `/v1/demo/audit` | POST | Dev-only synchronous audit |
-| `/v1/demo/webhook` | POST | Dev-only Celery queue test |
+| `/v1/scan` | POST | Synchronous AST + secret scan |
+| `/v1/demo/audit` | POST | Dev-only synchronous audit for UI |
+| `/v1/demo/webhook` | POST | Dev-only async pipeline test |
+
+Latency telemetry: every response includes `X-Process-Time-Ms`.
+
+### 3.6 Project structure
+
+```
+.
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── README.md
+├── LICENSE
+├── app/
+│   ├── main.py
+│   ├── config.py
+│   ├── database.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── tasks.py
+│   ├── static/index.html
+│   └── services/
+│       ├── ast_parser.py
+│       └── security_engine.py
+├── alembic/env.py
+├── agentaudit/client.py
+├── docs/PROJECT_DOCUMENTATION.md
+└── scripts/
+    ├── demo.py
+    ├── test_scan_engine.py
+    └── generate_word_doc.py
+```
 
 ---
 
-## 4. Security & Compliance Design
+## 4. Database & Multi-Tenant Isolation
 
-### 4.1 Why this matters for regulated organizations
+### 4.1 Schema overview
 
-| Requirement | How AgentAuditAI addresses it |
+| Table | Column | Type | Purpose |
+|---|---|---|---|
+| `organizations` | `id` | UUID PK | Canonical tenant identifier |
+| `organizations` | `org_name` | VARCHAR(255) | GitHub org / account name |
+| `organizations` | `github_installation_id` | VARCHAR(64) UNIQUE | Installation → tenant mapping |
+| `organizations` | `author_metadata` | JSONB | Creator attribution |
+| `scan_audit_logs` | `organization_id` | UUID FK (indexed) | **RLS isolation key** |
+| `scan_audit_logs` | `repository_name` | VARCHAR(512) | `owner/repo` |
+| `scan_audit_logs` | `scan_status` | VARCHAR(32) | `passed` or `blocked` |
+| `scan_audit_logs` | `vulnerabilities_found` | JSONB | Structured findings |
+| `scan_audit_logs` | `metadata_summary` | JSONB | Counts and event metadata |
+
+### 4.2 Row-Level Security policy
+
+```sql
+ALTER TABLE scan_audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scan_audit_logs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_policy ON scan_audit_logs
+USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+```
+
+### 4.3 RLS evaluation flow
+
+| Step | Actor | Operation | Outcome |
+|---|---|---|---|
+| 1 | Celery worker | `SET LOCAL app.current_organization_id` | Binds transaction to tenant |
+| 2 | PostgreSQL | Evaluates `USING` on `SELECT` | Returns only matching rows |
+| 3 | PostgreSQL | Evaluates policy on `INSERT` | Permits writes for matching tenant only |
+| 4 | Cross-tenant query | Any `SELECT` without context | Zero rows returned |
+
+---
+
+## 5. Security & Compliance Design
+
+### 5.1 Regulated organization alignment
+
+| Requirement | How AgentAudit AI addresses it |
 |---|---|
-| **Data minimization** | Only audit metadata stored; never raw diffs |
-| **Immediate webhook ACK** | 202 response prevents GitHub retry storms |
-| **Secret verification** | Rejects unsigned/tampered payloads (403) |
-| **Memory hygiene** | Explicit diff purge + garbage collection |
-| **Audit trail** | Structured logs with tenant/installation IDs |
-| **Tenant isolation** | `tenant_id` propagated through task pipeline |
+| Data minimization | Diff content never stored; only scan metadata persisted |
+| Immediate webhook ACK | 202 response prevents GitHub retry storms |
+| Secret verification | Rejects unsigned/tampered payloads (403) |
+| Memory hygiene | Explicit diff purge + garbage collection |
+| Tenant isolation | PostgreSQL RLS + per-installation organization records |
+| Audit trail | `scan_audit_logs` with structured JSONB findings |
 
-### 4.2 Production hardening checklist
+### 5.2 Production hardening checklist
 
-- [ ] Set `ENVIRONMENT=production`
-- [ ] Use managed Redis (TLS-enabled)
-- [ ] Store secrets in vault (AWS Secrets Manager, Azure Key Vault, HashiCorp Vault)
-- [ ] Disable demo endpoints (automatic when `ENVIRONMENT != development`)
-- [ ] Enable HTTPS termination at load balancer / API gateway
+- [ ] Set `SECURITY_ENVIRONMENT=production`
+- [ ] Use managed Redis with TLS
+- [ ] Store secrets in Vault (AWS/Azure/HashiCorp)
+- [ ] Demo endpoints auto-disable outside development
+- [ ] Enable HTTPS termination at load balancer
 - [ ] Restrict ingress to GitHub IP ranges
-- [ ] Connect `DATABASE_URL` to production tenant cache
 - [ ] Enable centralized logging (Splunk, Datadog, ELK)
 - [ ] Rotate `GITHUB_WEBHOOK_SECRET` on schedule
 
-### 4.3 What is NEVER logged
+### 5.3 What is NEVER logged
 
 - Raw webhook body
 - Diff content
@@ -214,341 +301,187 @@ Logs only: `status`, `violation_count`, `high_risk_detected`, `tenant_id`, `inst
 
 ---
 
-## 5. Installation & Operations
+## 6. Installation & Operations
 
-### 5.1 Prerequisites
+### 6.1 Prerequisites
 
-- Docker Desktop (recommended) **or** Python 3.12+
-- Redis 6+
-- PostgreSQL (or compatible DB for tenant cache)
+- Docker Desktop (recommended) or Docker Engine + Compose v2
+- Python 3.12+ (optional, for local scripts)
+- Git
 
-### 5.2 Quick start (Docker — recommended)
+### 6.2 Quick start
 
 ```powershell
 cd C:\git\github-webhook-audit
 copy .env.example .env
-start.bat
+docker-compose up --build -d
 ```
 
-Services started:
+### 6.3 Services
 
 | Service | Port | Role |
 |---|---|---|
-| `api` | 8000 | FastAPI gateway + UI |
-| `redis` | 6379 | Celery broker |
-| `worker` | — | Background audits |
+| `postgres` | 5432 | Multi-tenant metadata store |
+| `redis` | 6379 | Celery broker + result backend |
+| `web` | 8000 | FastAPI ingress + demo UI |
+| `worker` | — | Celery audit processor |
 
-### 5.3 Restart
+### 6.4 Operational commands
 
-```powershell
-restart.bat
+```bash
+docker-compose ps
+curl http://localhost:8000/health
+docker-compose logs web --tail 50
+docker-compose logs worker --tail 50
+docker-compose logs -f web worker
+docker-compose down
 ```
 
-### 5.4 Manual start (no Docker)
+### 6.5 Manual start (without Docker)
 
 ```powershell
-# Terminal 1
+# Terminal 1 — PostgreSQL and Redis via Docker
+docker run -d -p 5432:5432 -e POSTGRES_USER=agentaudit -e POSTGRES_PASSWORD=agentaudit -e POSTGRES_DB=agentaudit postgres:16-alpine
 docker run -d -p 6379:6379 redis:alpine
 
-# Terminal 2
-python -m celery -A app.workers.tasks.celery_app worker --loglevel=info --pool=solo
+# Terminal 2 — Worker
+python -m celery -A app.tasks.celery_app worker --loglevel=info -Q agentaudit
 
-# Terminal 3
+# Terminal 3 — API
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-> **Windows note:** Celery requires `--pool=solo` on Windows hosts.
-
-### 5.5 Project structure
-
-```
-github-webhook-audit/
-├── app/
-│   ├── core/
-│   │   └── config.py           # Pydantic settings
-│   ├── services/
-│   │   └── audit_engine.py     # Credential scanner
-│   ├── workers/
-│   │   └── tasks.py            # Celery tasks
-│   ├── static/
-│   │   └── index.html          # Demo UI
-│   └── main.py                 # FastAPI gateway
-├── docs/
-│   └── PROJECT_DOCUMENTATION.md
-├── scripts/
-│   └── demo.py                 # CLI demo script
-├── docker-compose.yml
-├── Dockerfile
-├── start.bat
-├── restart.bat
-├── demo.bat
-├── requirements.txt
-└── .env.example
-```
+> **Windows note:** Celery requires `--pool=solo` when running the worker directly on Windows hosts.
 
 ---
 
-## 6. Testing Guide
+## 7. Testing Guide
 
-### 6.1 Test matrix
+### 7.1 Test matrix
 
 | Test | Method | Expected |
 |---|---|---|
-| Health check | `GET /health` | `200 {"status":"ok"}` |
-| UI dashboard | `GET /` | `200` HTML page |
+| Health check | `GET /health` | `status: ok`, DB + Redis connected |
+| UI dashboard | `GET /` | HTML demo page |
 | Clean diff audit | UI → Run audit | `PASS`, 0 violations |
 | AWS key leak | UI → AWS example | `FAIL`, high risk |
 | Stripe key leak | UI → Stripe example | `FAIL`, high risk |
+| AST violation | `POST /v1/scan` with `eval()` | `status: blocked` |
 | Invalid signature | Webhook without HMAC | `403 Forbidden` |
-| Async pipeline | Queue via webhook flow | `202` + worker logs |
+| Async pipeline | Queue via webhook flow | `202` + worker logs + DB row |
 
-### 6.2 UI testing (fastest)
+### 7.2 UI testing (fastest)
 
 1. Open [http://localhost:8000](http://localhost:8000)
 2. Click **AWS key leak**
 3. Click **Run audit**
 4. Expect: **FAIL**, 1 violation, high risk
 
-### 6.3 CLI demo script
+### 7.3 CLI scripts
 
 ```powershell
-cd C:\git\github-webhook-audit
+python scripts\test_scan_engine.py
 python scripts\demo.py
+python scripts\quick_test.py
 ```
 
-### 6.4 Signed webhook test (PowerShell)
+### 7.4 Validation checklist before go-live
 
-```powershell
-python -c @"
-import hmac, hashlib, json, urllib.request
-
-secret = 'replace-with-your-webhook-secret'
-payload = {
-    'tenant_id': 'acme-corp',
-    'installation': {'id': 99001, 'account': {'login': 'acme-enterprise'}},
-    'diff': \"+API_KEY = 'AKIAIOSFODNN7EXAMPLE'\n\"
-}
-body = json.dumps(payload).encode()
-sig = 'sha256=' + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-
-req = urllib.request.Request(
-    'http://localhost:8000/v1/webhooks/github',
-    data=body,
-    headers={'Content-Type': 'application/json', 'X-Hub-Signature-256': sig},
-    method='POST'
-)
-resp = urllib.request.urlopen(req)
-print('Status:', resp.status)
-"@
-```
-
-**Expected:** `Status: 202`
-
-Check worker logs:
-
-```powershell
-docker compose logs worker --tail 10
-```
-
-### 6.5 Validation checklist before go-live
-
-- [ ] All Docker services healthy
-- [ ] `/health` returns 200
+- [ ] All four Docker services healthy
+- [ ] `/health` returns `database: connected` and `redis: connected`
 - [ ] UI audit PASS/FAIL scenarios work
 - [ ] Signed webhook returns 202
 - [ ] Unsigned webhook returns 403
-- [ ] Worker logs show metadata only (no diff content)
-- [ ] Demo endpoints return 403 when `ENVIRONMENT=production`
+- [ ] Worker logs show audit completion without diff content
+- [ ] Demo endpoints return 403 when `SECURITY_ENVIRONMENT=production`
 
 ---
 
-## 7. Enterprise Integration
+## 8. Enterprise Integration
 
-### 7.1 GitHub Enterprise Server (GHES)
+### 8.1 GitHub Enterprise Server
 
-For on-premises GitHub Enterprise:
+1. Deploy AgentAudit AI inside your corporate VPC.
+2. Configure webhook URL: `https://audit.internal.company.com/v1/webhooks/github`
+3. Match `GITHUB_WEBHOOK_SECRET` with GHES admin settings.
+4. Use internal Redis cluster and PostgreSQL with RLS.
+5. Forward worker metadata logs to SIEM.
 
-1. Deploy AgentAuditAI inside your corporate VPC.
-2. Configure GHES webhook URL:
-   ```
-   https://audit.internal.company.com/v1/webhooks/github
-   ```
-3. Set webhook secret in GHES admin → match `GITHUB_WEBHOOK_SECRET`.
-4. Select events: `push`, `pull_request`, `installation`.
-5. Use internal Redis cluster and PostgreSQL for tenant cache.
-
-```mermaid
-flowchart LR
-    GHES[GitHub Enterprise Server] --> LB[Internal Load Balancer]
-    LB --> API[AgentAuditAI API]
-    API --> Redis[Enterprise Redis]
-    API --> PG[PostgreSQL Tenant DB]
-    API --> SIEM[SIEM / Splunk]
-```
-
-### 7.2 Multi-tenant SaaS deployment
-
-For MSPs or platform vendors serving multiple enterprise clients:
+### 8.2 Multi-tenant SaaS deployment
 
 | Concern | Implementation |
 |---|---|
-| Tenant routing | Map `installation.account.login` → `tenant_id` |
-| Config cache | `DATABASE_URL` stores per-tenant policy rules |
-| Secret isolation | Per-tenant webhook secrets (future: secret rotation table) |
+| Tenant routing | `github_installation_id` → `organizations.id` |
+| Data isolation | PostgreSQL RLS on `scan_audit_logs` |
+| Secret isolation | Per-installation webhook secrets (vault-backed) |
 | Rate limiting | API gateway / WAF in front of FastAPI |
-| Observability | Tag logs with `tenant_id` + `installation_id` |
+| Observability | Tag logs with `installation_id` + `repository_name` |
 
-### 7.3 Enterprise security controls
+### 8.3 Enterprise security controls
 
 | Control | Recommendation |
 |---|---|
-| Network | Private subnet, no public ingress except through WAF |
-| Secrets | Vault-backed `GITHUB_WEBHOOK_SECRET` injection |
+| Network | Private subnet behind WAF |
+| Secrets | Vault-backed secret injection |
 | TLS | Terminate at ALB/NGINX with corporate CA |
 | IAM | Service accounts for worker → DB access |
-| Audit | Forward worker metadata logs to SIEM |
-| HA | Horizontal scale: multiple Celery workers + Redis Sentinel |
-
-### 7.4 CI/CD pipeline integration
-
-```yaml
-# Example: Azure DevOps / GitHub Actions smoke test
-- name: Health check
-  run: curl -f http://audit-api:8000/health
-
-- name: Audit smoke test
-  run: python scripts/demo.py
-```
-
-### 7.5 Policy engine extension (recommended)
-
-Replace mock `_record_audit_result` with:
-
-- **Jira** ticket creation on `high_risk_detected`
-- **ServiceNow** incident for public company SOX controls
-- **Slack/Teams** alert to security channel
-- **AWS Security Hub** finding export
+| HA | Multiple Celery workers + Redis Sentinel |
 
 ---
 
-## 8. Public Company Integration
+## 9. Public Company Integration
 
-Public companies face additional scrutiny (SOX, SEC cybersecurity rules, GDPR for EU subsidiaries).
+### 9.1 Compliance mapping
 
-### 8.1 Compliance mapping
-
-| Regulation / Framework | AgentAuditAI alignment |
+| Regulation / Framework | Alignment |
 |---|---|
-| **SOX ITGC** | Prevent unauthorized credential commits; audit trail of violations |
-| **SEC Cybersecurity Disclosure** | Demonstrate proactive secret scanning controls |
-| **GDPR Art. 5** | Data minimization — no diff retention |
-| **PCI-DSS** | Prevent Stripe key leakage in source code |
-| **NIST CSF** | Detect (DE.CM), Respond (RS.AN) |
+| SOX ITGC | Prevent unauthorized credential commits; immutable audit logs |
+| SEC Cybersecurity Disclosure | Proactive secret scanning controls |
+| GDPR Art. 5 | Data minimization — no diff retention |
+| PCI-DSS | Prevent Stripe key leakage in source code |
+| NIST CSF | Detect (DE.CM), Respond (RS.AN) |
 
-### 8.2 Public company deployment pattern
-
-```mermaid
-flowchart TB
-    subgraph Internet
-        GHC[GitHub Cloud]
-    end
-
-    subgraph DMZ
-        WAF[Cloud WAF]
-    end
-
-    subgraph PrivateCloud
-        API[AgentAuditAI]
-        REDIS[Redis]
-        WORKER[Celery Workers]
-        DB[(Audit Metadata DB)]
-    end
-
-    subgraph GRC
-        SIEM[SIEM]
-        GRC2[GRC Platform]
-        LEGAL[Legal Hold Archive]
-    end
-
-    GHC --> WAF --> API
-    API --> REDIS --> WORKER
-    WORKER --> DB
-    WORKER --> SIEM
-    DB --> GRC2
-    SIEM --> LEGAL
-```
-
-### 8.3 Board-ready reporting metrics
-
-Export from audit metadata store:
+### 9.2 Board-ready reporting metrics
 
 | Metric | Business value |
 |---|---|
 | Total audits per quarter | Control operating effectiveness |
-| High-risk detection rate | Security posture trend |
+| Blocked scan rate | Security posture trend |
+| Violations by repository | Targeted developer training |
 | Mean time to detect | Incident response KPI |
-| Violations by tenant/repo | Targeted developer training |
-| False positive rate | Rule tuning effectiveness |
 
-### 8.4 GitHub.com (public cloud) setup
+### 9.3 GitHub.com setup
 
 1. Create GitHub App or Organization Webhook.
 2. Payload URL: `https://your-domain.com/v1/webhooks/github`
-3. Content type: `application/json`
-4. Secret: generate 32+ char random string → set in `.env`.
-5. For local dev, use ngrok:
-   ```powershell
-   ngrok http 8000
-   ```
-6. Enable SSL — GitHub requires HTTPS for production webhooks.
-
-### 8.5 Data residency
-
-For EU public companies:
-
-- Deploy API + workers in EU region (e.g., `eu-west-1`)
-- Use EU-hosted Redis and PostgreSQL
-- Ensure metadata DB does not replicate to non-EU regions
-- Document diff non-retention in privacy impact assessment (PIA)
+3. Secret: 32+ char random string → set in `.env`.
+4. For local dev, use ngrok: `ngrok http 8000`
 
 ---
 
-## 9. API Reference
+## 10. API Reference
 
 ### `GET /health`
 
 ```json
-{"status": "ok", "service": "AgentAuditAI"}
+{
+  "status": "ok",
+  "service": "AgentAuditAI",
+  "database": "connected",
+  "redis": "connected",
+  "environment": "development"
+}
 ```
 
 ### `POST /v1/webhooks/github`
 
-**Headers:**
-- `X-Hub-Signature-256: sha256=<hmac_hex>`
-- `Content-Type: application/json`
+**Headers:** `X-Hub-Signature-256`, `Content-Type: application/json`
 
-**Body (example):**
-```json
-{
-  "tenant_id": "acme-corp",
-  "installation": {
-    "id": 12345,
-    "account": {"login": "acme-enterprise"}
-  },
-  "diff": "+AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n"
-}
-```
-
-**Responses:**
-| Code | Meaning |
-|---|---|
-| 202 | Accepted and queued |
-| 403 | Invalid/missing signature |
-| 400 | Malformed JSON |
+**Responses:** `202 Accepted` | `403 Forbidden` | `400 Bad Request`
 
 ### `POST /v1/demo/audit` (development only)
 
-**Body:**
+**Request:**
 ```json
 {"diff": "+def hello():\n+    return 'world'\n"}
 ```
@@ -562,282 +495,102 @@ For EU public companies:
 }
 ```
 
+### `POST /v1/scan`
+
+**Request:**
+```json
+{
+  "files": [
+    {"path": "unsafe.py", "content": "result = eval(user_input)\n"}
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "status": "blocked",
+  "reason": "Security Alert: Unauthorized eval() execution detected...",
+  "violations": [{"file": "unsafe.py", "line": 1, "category": "ast", "rule": "dangerous_call"}]
+}
+```
+
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| UI shows "Not Found" | `/v1/demo/audit` missing or stale container | `docker-compose up --build -d` |
 | UI shows 404 | Old process on port 8000 | Run `restart.bat`, use `localhost:8000` |
 | `403 Forbidden` | Secret mismatch | Align `.env` with GitHub webhook secret |
-| Worker not processing | Redis down | `docker compose ps`, restart Redis |
-| Docker won't start | Docker Desktop off | Start Docker Desktop first |
-| Celery fails on Windows | Prefork pool | Use `--pool=solo` |
-| Demo endpoints 403 | `ENVIRONMENT=production` | Expected — use production webhook path |
+| Worker not processing | Redis down or wrong queue | `docker-compose ps`, check `agentaudit` queue |
+| Stripe example passes | Demo key too short | Use 24+ chars after `sk_live_` |
+| Demo endpoints 403 | `SECURITY_ENVIRONMENT=production` | Expected — use production webhook path |
 
 ### Useful commands
 
 ```powershell
-docker compose ps
-docker compose logs api --tail 20
-docker compose logs worker --tail 20
-docker compose down && docker compose up --build
+docker-compose ps
+docker-compose logs web --tail 20
+docker-compose logs worker --tail 20
+docker-compose down && docker-compose up --build -d
 ```
 
 ---
 
-## 11. Roadmap & Extensions
+## 12. Roadmap & Extensions
 
-| Phase | Feature |
+| Version | Feature |
 |---|---|
-| v1.1 | GitHub App auto-registration |
-| v1.2 | Custom rule packs per tenant |
-| v1.3 | SARIF export for GitHub Advanced Security |
-| v1.4 | HashiCorp Vault secret injection |
-| v2.0 | Real database persistence (replace mock callback) |
 | v2.1 | Admin UI for policy management |
+| v2.2 | Custom rule packs per tenant |
+| v2.3 | SARIF export for GitHub Advanced Security |
+| v2.4 | HashiCorp Vault secret injection |
+| v2.5 | Jira / ServiceNow incident automation |
 
 ---
 
-## 12. Technology Stack & Rationale
-
-This section explains every major technology used in AgentAuditAI and the engineering reasons behind each choice.
-
-### 12.1 Core language
-
-#### Python 3.12
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | API gateway, audit engine, background workers, configuration, documentation tooling |
-| **Why chosen** | Mature ecosystem for security tooling, fast to develop, excellent regex/HMAC support, widely adopted in enterprise DevSecOps teams |
-| **Enterprise fit** | Easy to hire for, integrates with SIEM/vault/CI pipelines, runs consistently in Docker |
-
----
-
-### 12.2 API layer
-
-#### FastAPI
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Webhook gateway, demo UI routes, health checks, OpenAPI docs |
-| **Why chosen** | High-performance async HTTP, automatic request validation, built-in Swagger UI at `/docs` |
-| **Project need** | GitHub webhooks require sub-second HMAC verification and immediate `202 Accepted` responses |
-
-#### Uvicorn
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | ASGI server hosting the FastAPI application |
-| **Why chosen** | Lightweight, production-ready, standard pairing with FastAPI |
-| **Project need** | Reliable local and containerized API serving on port 8000 |
-
----
-
-### 12.3 Configuration management
-
-#### Pydantic v2 + pydantic-settings
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Loading `REDIS_URL`, `GITHUB_WEBHOOK_SECRET`, `DATABASE_URL`, and other env vars |
-| **Why chosen** | Type-safe validation at startup, `SecretStr` prevents accidental secret exposure |
-| **Project need** | Fail fast on misconfiguration; enforce required secrets before processing webhooks |
-
-#### python-dotenv
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Loading `.env` files in local development |
-| **Why chosen** | Standard developer workflow; keeps secrets out of source code |
-| **Project need** | Simple onboarding for demos and local testing |
-
----
-
-### 12.4 Security & audit engine
-
-#### HMAC + hashlib (Python standard library)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Verifying `X-Hub-Signature-256` on incoming GitHub webhooks |
-| **Why chosen** | Native, auditable, no extra dependencies; `hmac.compare_digest` prevents timing attacks |
-| **Project need** | Reject tampered payloads before any diff content is processed |
-
-#### Compiled regex (`re` module)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Detecting AWS, Stripe, and GitLab credential patterns in diffs |
-| **Why chosen** | Fast, stateless, explainable rules — no ML black box |
-| **Project need** | Compliance teams need auditable, predictable detection logic |
-
-#### `gc` (garbage collector)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Purging diff content from memory after each audit |
-| **Why chosen** | Reinforces the no-retention policy beyond simple variable deletion |
-| **Project need** | Public company data minimization (GDPR Art. 5) and internal security policy |
-
----
-
-### 12.5 Background processing
-
-#### Celery
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | `execute_asynchronous_audit` background task |
-| **Why chosen** | Industry-standard distributed task queue for Python |
-| **Project need** | Decouple webhook ACK from diff scanning; GitHub expects fast responses |
-
-#### Redis
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Celery message broker and result backend |
-| **Why chosen** | Fast, reliable, horizontally scalable, widely deployed in enterprises |
-| **Project need** | Queue audit jobs between API and worker with minimal latency |
-
----
-
-### 12.6 Data & storage
-
-#### PostgreSQL (via `DATABASE_URL`)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Tenant configuration caching and audit metadata (production target) |
-| **Why chosen** | Enterprise-standard RDBMS with strong audit and compliance track record |
-| **Project need** | Multi-tenant policy storage with structured query and reporting |
-
-#### Mock metadata callback (current implementation)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Simulating persistence of audit outcomes during development |
-| **Why chosen** | Keeps the demo self-contained; easy to replace with Jira, ServiceNow, or SIEM |
-| **Project need** | Show end-to-end pipeline without locking into one enterprise system |
-
----
-
-### 12.7 Frontend & demo tooling
-
-#### HTML + JavaScript (static dashboard)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Browser UI at `/` for live demos and QA |
-| **Why chosen** | Zero build step, instant load, calls `/v1/demo/audit` for real-time results |
-| **Project need** | Presentation-ready interface for stakeholders and security reviewers |
-
-#### Batch scripts (`start.bat`, `restart.bat`, `demo.bat`)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | One-click startup, restart, and CLI demo on Windows |
-| **Why chosen** | Reduces friction for non-CLI users during demos |
-| **Project need** | Fast, repeatable demonstrations in enterprise meetings |
-
----
-
-### 12.8 Deployment & operations
-
-#### Docker + Docker Compose
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Running API, Redis, and Worker as a unified stack |
-| **Why chosen** | Reproducible environments, matches enterprise microservice deployment patterns |
-| **Project need** | One-command startup; eliminates local dependency conflicts |
-
-#### Dockerfile (Python 3.12-slim)
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Container image for API and worker services |
-| **Why chosen** | Small image size, consistent Python runtime across environments |
-| **Project need** | Portable builds for cloud and on-premises enterprise deployment |
-
----
-
-### 12.9 Documentation tooling
-
-#### python-docx + matplotlib
-
-| Aspect | Detail |
-|---|---|
-| **Used for** | Generating Word documentation with embedded architecture diagrams |
-| **Why chosen** | Produces stakeholder-ready `.docx` deliverables with visual pages |
-| **Project need** | Compliance officers and executives need formatted documents, not just README files |
-
----
-
-### 12.10 Architecture technology map
-
-```mermaid
-flowchart LR
-    GH[GitHub] --> FastAPI[FastAPI + Uvicorn]
-    FastAPI --> Redis[Redis]
-    Redis --> Celery[Celery Worker]
-    Celery --> Engine[Regex Audit Engine]
-    Engine --> Meta[Metadata / Logs]
-    Config[Pydantic Settings] --> FastAPI
-    Config --> Celery
-```
-
----
-
-### 12.11 Why this stack fits enterprise & public companies
+## 13. Technology Stack & Rationale
 
 | Organizational need | Technology answer |
 |---|---|
 | Fast webhook response | FastAPI + async + Celery queue |
-| Secret verification | HMAC-SHA256 with constant-time compare |
-| No diff retention | Stateless engine + `gc.collect()` |
+| Secret verification | HMAC-SHA256 constant-time compare |
+| No diff retention | SecurityEngine memory purge + `gc.collect()` |
+| Multi-tenant isolation | PostgreSQL RLS + `SET LOCAL` tenant context |
+| AST + secret scanning | tree-sitter + Python `ast` + compiled regex |
 | Config safety | Pydantic Settings + `SecretStr` |
 | Horizontal scalability | Redis + multiple Celery workers |
-| Compliance audit trail | Metadata-only structured logging |
-| Easy deployment | Docker Compose |
-| SIEM / vault / GHES integration | Modular Python services |
+| Easy deployment | Docker Compose (4 services) |
 
----
+### Technologies intentionally NOT used
 
-### 12.12 Technologies intentionally NOT used
-
-| Technology | Why not used |
+| Technology | Why not |
 |---|---|
-| **Django** | Heavier than needed for a focused webhook API |
-| **Kafka** | Overkill for current queue volume; Redis is simpler to operate |
-| **ML / AI scanning** | Regex is faster, explainable, and auditable for known credential formats |
-| **Storing diffs in a database** | Violates data minimization and compliance retention policies |
-| **React / Vue SPA** | Unnecessary build complexity for a demo dashboard |
+| Django | Heavier than needed for a focused webhook API |
+| Kafka | Overkill for current volume; Redis is simpler |
+| ML / AI scanning | Regex + AST is explainable and auditable |
+| Storing diffs in database | Violates data minimization policies |
 
 ---
 
-### 12.13 Summary
-
-AgentAuditAI uses a **Python + FastAPI + Celery + Redis** architecture to deliver a **fast, compliant, asynchronously audited GitHub webhook gateway**. Every technology choice prioritizes **speed, explainability, data minimization, and enterprise deployability** over unnecessary complexity.
-
----
-
-## Appendix A — Environment file template
+## Appendix A — Environment template
 
 ```env
+DATABASE_URL=postgresql://agentaudit:agentaudit@postgres:5432/agentaudit
+REDIS_URL=redis://redis:6379/0
 GITHUB_WEBHOOK_SECRET=your-32-char-minimum-secret
-DATABASE_URL=postgresql://user:pass@db-host:5432/tenant_cache
-REDIS_URL=redis://redis-host:6379/0
-MEMORY_RETENTION_LIMIT_MB=50
-ENVIRONMENT=production
+SECRET_KEY=your-long-random-secret-key
+SECURITY_ENVIRONMENT=development
 ```
 
 ## Appendix B — Contact & support
 
 - **Repository:** [github.com/mrunalvuppala/github-webhook-audit](https://github.com/mrunalvuppala/github-webhook-audit)
 - **Issues:** GitHub Issues tab on the repository
+- **Word documentation:** Run `python scripts/generate_word_doc.py` or double-click `download-word-doc.bat`
 
 ---
 
-*This document is intended for technical teams, security engineers, compliance officers, and platform architects evaluating or operating AgentAuditAI in enterprise and public company environments.*
+*This document is intended for technical teams, security engineers, compliance officers, and platform architects evaluating or operating AgentAudit AI in enterprise and public company environments.*

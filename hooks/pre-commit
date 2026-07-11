@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AgentAuditAI Phase 1 pre-commit hook (installed into .git/hooks/pre-commit)
+# AgentAuditAI pre-commit hook (installed into .git/hooks/pre-commit)
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AgentAuditAI Phase 1 — pre-commit hook installer
+# AgentAuditAI pre-commit hook installer
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

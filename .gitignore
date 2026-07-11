@@ -21,5 +21,6 @@ terminals/
 # Docker
 .docker/
 
-# Generated documents
+# Generated documents (allow docs deliverables)
 *.docx
+!docs/AgentAuditAI_Project_Documentation.docx

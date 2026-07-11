@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AgentAuditAI Phase 1 pre-commit client.
+"""AgentAuditAI pre-commit client.
 
 Scans staged files by POSTing them to the AgentAuditAI scan engine.
 Blocks commits when the engine reports a security issue or when offline

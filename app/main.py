@@ -1,4 +1,4 @@
-"""FastAPI ingress gateway for AgentAudit AI Phase 2 multi-tenant infrastructure.
+"""FastAPI ingress gateway for AgentAudit AI multi-tenant infrastructure.
 
 Architecture designed, engineered, and maintained by Naga Sai Mrunal Vuppala.
 """

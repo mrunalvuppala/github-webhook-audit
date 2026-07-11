@@ -1,4 +1,4 @@
-# AgentAudit AI — Phase 2 Multi-Tenant Infrastructure
+# AgentAudit AI — Multi-Tenant Infrastructure
 
 **Production-grade, multi-tenant GitHub webhook security auditing platform with PostgreSQL Row-Level Security, Redis-backed Celery workers, and AST/secret scanning.**
 
@@ -310,7 +310,7 @@ curl -s -X POST http://localhost:8000/v1/demo/webhook \
 
 ---
 
-## Project structure (Phase 2)
+## Project structure
 
 ```
 .
@@ -334,6 +334,14 @@ curl -s -X POST http://localhost:8000/v1/demo/webhook \
 └── alembic/
     └── env.py
 ```
+
+---
+
+## Documentation
+
+- **[docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md)** — full technical guide, architecture, RLS, enterprise integration
+- Run `python scripts/generate_word_doc.py` for Word documentation with diagrams
+- Double-click **`download-docs.bat`** or **`download-word-doc.bat`** to copy docs to Desktop
 
 ---
 

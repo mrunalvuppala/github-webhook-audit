@@ -32,20 +32,21 @@ def _save_fig(name: str) -> Path:
 
 
 def draw_system_architecture() -> Path:
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(12, 7.5))
     ax.set_xlim(0, 12)
     ax.set_ylim(0, 8)
     ax.axis("off")
-    ax.set_title("AgentAuditAI — System Architecture", fontsize=16, fontweight="bold", pad=16)
+    ax.set_title("AgentAudit AI — Multi-Tenant System Architecture", fontsize=16, fontweight="bold", pad=16)
 
     boxes = [
-        (0.5, 6.0, 2.2, 1.0, "#E8F1FF", "GitHub /\nGitHub Enterprise"),
-        (3.5, 6.0, 3.0, 1.0, "#DFF5E8", "FastAPI Gateway\nHMAC Verify + 202 ACK"),
-        (7.2, 6.0, 2.0, 1.0, "#FFF2CC", "Redis\nMessage Broker"),
-        (9.7, 6.0, 2.0, 1.0, "#FCE4EC", "Celery Worker\nAudit Engine"),
-        (3.5, 3.8, 2.4, 1.0, "#E8EAF6", "Demo UI\nGET /"),
-        (6.3, 3.8, 2.8, 1.0, "#F3E5F5", "Metadata Store\nLogs + Tenant DB"),
-        (9.7, 3.8, 2.0, 1.0, "#E0F7FA", "Credential Rules\nAWS / Stripe / GitLab"),
+        (0.4, 6.0, 2.2, 1.0, "#E8F1FF", "GitHub /\nGitHub Enterprise"),
+        (3.0, 6.0, 2.5, 1.0, "#DFF5E8", "FastAPI Web\nHMAC + 202 ACK"),
+        (5.9, 6.0, 1.8, 1.0, "#FFF2CC", "Redis\nCelery Broker"),
+        (8.1, 6.0, 2.0, 1.0, "#FCE4EC", "Celery Worker\nSecurityEngine"),
+        (3.0, 3.5, 2.5, 1.0, "#E8EAF6", "Demo UI\nGET / + /v1/demo/audit"),
+        (5.9, 3.5, 2.0, 1.0, "#BBDEFB", "PostgreSQL 16\norganizations"),
+        (8.4, 3.5, 1.7, 1.0, "#C5CAE9", "scan_audit_logs\nRLS enforced"),
+        (10.3, 3.5, 1.4, 1.0, "#E0F7FA", "AST + Secrets\nAWS/Stripe/GitLab"),
     ]
 
     for x, y, w, h, color, label in boxes:
@@ -54,21 +55,21 @@ def draw_system_architecture() -> Path:
             linewidth=1.2, edgecolor="#455A64", facecolor=color
         )
         ax.add_patch(rect)
-        ax.text(x + w / 2, y + h / 2, label, ha="center", va="center", fontsize=9, fontweight="bold")
+        ax.text(x + w / 2, y + h / 2, label, ha="center", va="center", fontsize=8.5, fontweight="bold")
 
     arrows = [
-        ((2.7, 6.5), (3.5, 6.5), "Signed webhook"),
-        ((6.5, 6.5), (7.2, 6.5), "Queue task"),
-        ((9.2, 6.5), (9.7, 6.5), "Process"),
-        ((10.7, 6.0), (10.7, 4.8), "Scan"),
-        ((10.7, 4.3), (9.1, 4.3), "Metadata only"),
-        ((4.7, 4.8), (4.7, 6.0), "Dev audit"),
-        ((3.5, 6.2), (2.7, 6.2), "403 / 202"),
+        ((2.6, 6.5), (3.0, 6.5), "Signed webhook"),
+        ((5.5, 6.5), (5.9, 6.5), "Queue task"),
+        ((7.7, 6.5), (8.1, 6.5), "Process"),
+        ((9.1, 6.0), (9.1, 4.5), "SET LOCAL tenant"),
+        ((9.1, 4.0), (7.9, 4.0), "Persist metadata"),
+        ((4.25, 4.5), (4.25, 6.0), "Dev audit"),
+        ((3.0, 6.2), (2.6, 6.2), "403 / 202"),
     ]
     for start, end, label in arrows:
         ax.annotate("", xy=end, xytext=start, arrowprops=dict(arrowstyle="->", lw=1.5, color="#37474F"))
         mx, my = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
-        ax.text(mx, my + 0.15, label, fontsize=8, ha="center", color="#37474F")
+        ax.text(mx, my + 0.15, label, fontsize=7.5, ha="center", color="#37474F")
 
     return _save_fig("01_system_architecture.png")
 
@@ -82,11 +83,11 @@ def draw_request_lifecycle() -> Path:
         "1. GitHub POST\n/v1/webhooks/github",
         "2. Read raw body\nbytes",
         "3. Verify HMAC\nSHA-256",
-        "4. Parse tenant\n+ installation",
-        "5. Queue Celery\ntask",
+        "4. Extract\ninstallation_id",
+        "5. Queue Celery\ntask (agentaudit)",
         "6. Return 202\nAccepted",
-        "7. Audit diff\nin worker",
-        "8. Store metadata\nonly",
+        "7. SET LOCAL\ntenant context",
+        "8. Scan diff +\npersist RLS row",
     ]
     x_positions = [0.4 + i * 1.35 for i in range(len(steps))]
     for i, (x, step) in enumerate(zip(x_positions, steps)):
@@ -108,6 +109,36 @@ def draw_request_lifecycle() -> Path:
     return _save_fig("02_request_lifecycle.png")
 
 
+def draw_database_rls() -> Path:
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    ax.axis("off")
+    ax.set_title("PostgreSQL Row-Level Security — Tenant Isolation", fontsize=15, fontweight="bold", pad=14)
+
+    boxes = [
+        (0.5, 3.5, 2.5, 1.2, "#E3F2FD", "Celery Worker\nTransaction Start"),
+        (3.5, 3.5, 3.2, 1.2, "#FFF9C4", "SET LOCAL\napp.current_organization_id"),
+        (7.2, 3.5, 2.5, 1.2, "#C8E6C9", "INSERT\nscan_audit_logs"),
+        (10.2, 3.5, 1.5, 1.2, "#FFCDD2", "Other Tenant\n0 rows visible"),
+        (3.5, 1.5, 3.2, 1.0, "#D1C4E9", "RLS Policy:\norganization_id = current_setting(...)"),
+        (7.2, 1.5, 2.5, 1.0, "#BBDEFB", "organizations\ninstallation mapping"),
+    ]
+    for x, y, w, h, color, label in boxes:
+        rect = mpatches.FancyBboxPatch(
+            (x, y), w, h, boxstyle="round,pad=0.04,rounding_size=0.08",
+            linewidth=1.1, edgecolor="#455A64", facecolor=color
+        )
+        ax.add_patch(rect)
+        ax.text(x + w / 2, y + h / 2, label, ha="center", va="center", fontsize=8.5, fontweight="bold")
+
+    for start, end in [((3.0, 4.1), (3.5, 4.1)), ((6.7, 4.1), (7.2, 4.1)), ((9.7, 4.1), (10.2, 4.1)),
+                       ((5.1, 3.5), (5.1, 2.5)), ((8.45, 3.5), (8.45, 2.5))]:
+        ax.annotate("", xy=end, xytext=start, arrowprops=dict(arrowstyle="->", lw=1.4, color="#37474F"))
+
+    ax.set_xlim(0, 12)
+    ax.set_ylim(1.0, 5.5)
+    return _save_fig("07_database_rls.png")
+
+
 def draw_enterprise_deployment() -> Path:
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.axis("off")
@@ -117,9 +148,9 @@ def draw_enterprise_deployment() -> Path:
         (0.5, 5.0, 11.0, 0.9, "#E3F2FD", "Corporate Network / VPC"),
         (1.0, 3.7, 3.0, 1.0, "#FFF9C4", "GitHub\nEnterprise Server"),
         (4.5, 3.7, 2.5, 1.0, "#C8E6C9", "Internal\nLoad Balancer"),
-        (7.5, 3.7, 3.5, 1.0, "#FFE0B2", "AgentAuditAI\nAPI + Workers"),
+        (7.5, 3.7, 3.5, 1.0, "#FFE0B2", "AgentAudit AI\nWeb + Workers"),
         (1.0, 1.8, 2.3, 1.0, "#F8BBD0", "Enterprise\nRedis"),
-        (3.8, 1.8, 2.8, 1.0, "#D1C4E9", "PostgreSQL\nTenant Cache"),
+        (3.8, 1.8, 2.8, 1.0, "#D1C4E9", "PostgreSQL\nRLS Tenant DB"),
         (7.0, 1.8, 2.5, 1.0, "#B2DFDB", "HashiCorp\nVault"),
         (9.8, 1.8, 2.0, 1.0, "#CFD8DC", "SIEM\nSplunk/Datadog"),
     ]
@@ -221,11 +252,11 @@ def draw_testing_flow() -> Path:
     ax.set_title("Testing Workflow — Recommended Sequence", fontsize=15, fontweight="bold", pad=14)
 
     phases = [
-        ("Phase 1\nStart Services", "start.bat / docker compose up", "#BBDEFB"),
-        ("Phase 2\nHealth Check", "GET /health → 200 OK", "#C8E6C9"),
-        ("Phase 3\nUI Audit", "Run audit → PASS/FAIL", "#FFE082"),
-        ("Phase 4\nWebhook Test", "Signed POST → 202", "#CE93D8"),
-        ("Phase 5\nWorker Verify", "Check metadata logs", "#90CAF9"),
+        ("Step 1\nStart Services", "docker-compose up -d", "#BBDEFB"),
+        ("Step 2\nHealth Check", "GET /health → ok", "#C8E6C9"),
+        ("Step 3\nUI Audit", "Run audit → PASS/FAIL", "#FFE082"),
+        ("Step 4\nWebhook Test", "Signed POST → 202", "#CE93D8"),
+        ("Step 5\nWorker Verify", "Check worker + DB logs", "#90CAF9"),
     ]
     for i, (title, detail, color) in enumerate(phases):
         x = 0.5 + i * 2.15
@@ -312,8 +343,9 @@ def build_document(images: dict[str, Path]) -> Document:
 
     meta = doc.add_paragraph()
     meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    meta.add_run("\nVersion 1.0.0\n").bold = True
+    meta.add_run("\nVersion 2.0.0\n").bold = True
     meta.add_run("Author: Naga Sai Mrunal Vuppala\n")
+    meta.add_run("Architecture designed, engineered, and maintained by Naga Sai Mrunal Vuppala\n")
     meta.add_run("Repository: github.com/mrunalvuppala/github-webhook-audit\n")
     meta.add_run("Date: July 2026\n")
 
@@ -350,23 +382,25 @@ def build_document(images: dict[str, Path]) -> Document:
 
     # Section 1
     add_heading(doc, "1. Executive Summary", 1)
-    add_body(doc, "AgentAuditAI is a compliance-oriented GitHub webhook gateway that verifies incoming events, queues asynchronous credential audits, and returns immediate acknowledgment to GitHub.")
+    add_body(doc, "AgentAudit AI is a production-grade, multi-tenant GitHub webhook security platform with PostgreSQL Row-Level Security, Redis-backed Celery workers, and AST/secret scanning.")
     add_heading(doc, "Key Capabilities", 2)
     add_table(doc, ["Capability", "Description"], [
         ["Webhook verification", "HMAC-SHA256 via X-Hub-Signature-256"],
-        ["Asynchronous auditing", "Celery workers process diffs in background"],
-        ["Credential detection", "AWS, Stripe, and GitLab token patterns"],
-        ["Memory safety", "Diff content never logged or retained"],
-        ["Multi-tenant ready", "tenant_id and installation metadata"],
-        ["Demo UI", "Browser dashboard for presentations"],
+        ["Asynchronous auditing", "Celery workers with tenant-scoped DB writes"],
+        ["Credential detection", "AWS, Stripe, GitLab token patterns"],
+        ["AST validation", "eval(), exec(), os.system(), subprocess.*"],
+        ["Multi-tenant isolation", "PostgreSQL RLS on scan_audit_logs"],
+        ["Demo UI", "Browser dashboard for PASS/FAIL presentations"],
     ])
     add_heading(doc, "Technology Stack", 2)
     add_table(doc, ["Layer", "Technology"], [
         ["API Gateway", "FastAPI + Uvicorn"],
-        ["Configuration", "Pydantic Settings v2"],
+        ["Configuration", "Pydantic Settings v2 (app/config.py)"],
         ["Task Queue", "Celery + Redis"],
-        ["Audit Engine", "Stateless regex scanner"],
-        ["Deployment", "Docker Compose"],
+        ["Database", "PostgreSQL 16 + SQLAlchemy 2.0"],
+        ["Scan Engine", "SecurityEngine + ASTParser"],
+        ["Deployment", "Docker Compose (postgres, redis, web, worker)"],
+        ["License", "Business Source License 1.1"],
     ])
 
     add_image_page(doc, images["architecture"], "Figure 1 — System Architecture Overview")
@@ -374,33 +408,34 @@ def build_document(images: dict[str, Path]) -> Document:
     add_heading(doc, "Request Lifecycle", 2)
     add_body(doc, "Production webhooks follow an eight-step lifecycle ending in metadata-only persistence. Invalid signatures return HTTP 403 before any diff processing.")
     add_image_page(doc, images["lifecycle"], "Figure 2 — Production Webhook Request Lifecycle")
+    add_image_page(doc, images["rls"], "Figure 3 — PostgreSQL Row-Level Security Tenant Isolation")
 
     # Section 3
     doc.add_page_break()
     add_heading(doc, "3. Component Reference", 1)
     add_heading(doc, "Configuration Variables", 2)
     add_table(doc, ["Variable", "Required", "Default", "Purpose"], [
+        ["DATABASE_URL", "Yes", "—", "PostgreSQL connection string"],
         ["REDIS_URL", "No", "redis://localhost:6379/0", "Celery broker/backend"],
         ["GITHUB_WEBHOOK_SECRET", "Yes", "—", "Webhook HMAC secret"],
-        ["DATABASE_URL", "Yes", "—", "Tenant configuration cache"],
-        ["MEMORY_RETENTION_LIMIT_MB", "No", "50", "Parsing memory ceiling"],
-        ["ENVIRONMENT", "No", "development", "development / staging / production"],
+        ["SECRET_KEY", "Yes", "—", "Application cryptographic secret"],
+        ["SECURITY_ENVIRONMENT", "No", "development", "Enables demo endpoints when development"],
     ])
     add_heading(doc, "Detection Rules", 2)
     add_table(doc, ["Rule ID", "Pattern", "Risk"], [
         ["aws_access_key_id", "AKIA[0-9A-Z]{16}", "High"],
-        ["aws_secret_access_key", "AWS secret key assignment", "High"],
-        ["stripe_live_secret_key", "sk_live_*", "High"],
-        ["stripe_live_restricted_key", "rk_live_*", "High"],
-        ["stripe_test_secret_key", "sk_test_*", "Medium"],
+        ["stripe_live_secret_key", "sk_live_* (24+ chars)", "High"],
         ["gitlab_access_token", "glpat-*", "High"],
+        ["dangerous_call", "eval(), exec(), os.system()", "Medium"],
+        ["subprocess_call", "subprocess.run(), subprocess.call()", "Medium"],
     ])
     add_heading(doc, "API Endpoints", 2)
     add_table(doc, ["Endpoint", "Method", "Purpose"], [
         ["/", "GET", "Demo UI dashboard"],
-        ["/health", "GET", "Health check"],
+        ["/health", "GET", "Health check (DB + Redis)"],
         ["/docs", "GET", "Swagger UI"],
         ["/v1/webhooks/github", "POST", "Production webhook ingress"],
+        ["/v1/scan", "POST", "Synchronous AST + secret scan"],
         ["/v1/demo/audit", "POST", "Dev-only synchronous audit"],
         ["/v1/demo/webhook", "POST", "Dev-only Celery queue test"],
     ])
@@ -408,23 +443,23 @@ def build_document(images: dict[str, Path]) -> Document:
     # Section 4
     doc.add_page_break()
     add_heading(doc, "4. Security & Compliance Design", 1)
-    add_table(doc, ["Requirement", "AgentAuditAI Response"], [
+    add_table(doc, ["Requirement", "AgentAudit AI Response"], [
         ["Data minimization", "Only audit metadata stored; never raw diffs"],
         ["Immediate webhook ACK", "202 response prevents GitHub retry storms"],
         ["Secret verification", "Rejects unsigned/tampered payloads (403)"],
         ["Memory hygiene", "Explicit diff purge + garbage collection"],
-        ["Audit trail", "Structured logs with tenant/installation IDs"],
-        ["Tenant isolation", "tenant_id propagated through task pipeline"],
+        ["Tenant isolation", "PostgreSQL RLS + SET LOCAL tenant context"],
+        ["Audit trail", "scan_audit_logs with JSONB findings"],
     ])
     add_heading(doc, "Production Hardening Checklist", 2)
     checklist = [
-        "Set ENVIRONMENT=production",
+        "Set SECURITY_ENVIRONMENT=production",
         "Use managed Redis with TLS",
         "Store secrets in Vault (AWS/Azure/HashiCorp)",
         "Disable demo endpoints in production",
         "Enable HTTPS at load balancer",
         "Restrict ingress to GitHub IP ranges",
-        "Connect production DATABASE_URL",
+        "Connect production DATABASE_URL with RLS enabled",
         "Enable centralized logging (Splunk/Datadog/ELK)",
         "Rotate GITHUB_WEBHOOK_SECRET on schedule",
     ]
@@ -443,12 +478,13 @@ def build_document(images: dict[str, Path]) -> Document:
         run.font.name = "Consolas"
         run.font.size = Pt(9)
     add_table(doc, ["Service", "Port", "Role"], [
-        ["api", "8000", "FastAPI gateway + UI"],
+        ["postgres", "5432", "Multi-tenant metadata store"],
         ["redis", "6379", "Celery broker"],
+        ["web", "8000", "FastAPI gateway + UI"],
         ["worker", "—", "Background audits"],
     ])
 
-    add_image_page(doc, images["ui"], "Figure 3 — Demo UI Dashboard Layout")
+    add_image_page(doc, images["ui"], "Figure 4 — Demo UI Dashboard Layout")
 
     # Section 6
     doc.add_page_break()
@@ -461,17 +497,17 @@ def build_document(images: dict[str, Path]) -> Document:
         ["Invalid signature", "Webhook without HMAC", "403 Forbidden"],
         ["Async pipeline", "Queue via webhook flow", "202 + worker logs"],
     ])
-    add_image_page(doc, images["testing"], "Figure 4 — Recommended Testing Workflow")
+    add_image_page(doc, images["testing"], "Figure 5 — Recommended Testing Workflow")
 
     add_heading(doc, "Quick Test Example", 2)
-    add_body(doc, "Run: python scripts\\quick_test.py")
-    add_body(doc, "Expected output: Clean code PASS, AWS key leak FAIL with aws_access_key_id violation.")
+    add_body(doc, "Run: python scripts\\test_scan_engine.py")
+    add_body(doc, "Expected output: secret test blocked, AST test blocked, clean test ok.")
 
     # Section 7
     doc.add_page_break()
     add_heading(doc, "7. Enterprise Integration", 1)
     add_body(doc, "Deploy inside corporate VPC for GitHub Enterprise Server. Route webhooks to https://audit.internal.company.com/v1/webhooks/github")
-    add_image_page(doc, images["enterprise"], "Figure 5 — Enterprise Deployment Architecture")
+    add_image_page(doc, images["enterprise"], "Figure 6 — Enterprise Deployment Architecture")
     add_table(doc, ["Control", "Recommendation"], [
         ["Network", "Private subnet behind WAF"],
         ["Secrets", "Vault-backed secret injection"],
@@ -491,7 +527,7 @@ def build_document(images: dict[str, Path]) -> Document:
         ["PCI-DSS", "Prevent Stripe key leakage in source code"],
         ["NIST CSF", "Detect (DE.CM), Respond (RS.AN)"],
     ])
-    add_image_page(doc, images["public"], "Figure 6 — Public Company Deployment Pattern")
+    add_image_page(doc, images["public"], "Figure 7 — Public Company Deployment Pattern")
     add_table(doc, ["Metric", "Business Value"], [
         ["Total audits per quarter", "Control operating effectiveness"],
         ["High-risk detection rate", "Security posture trend"],
@@ -510,22 +546,22 @@ def build_document(images: dict[str, Path]) -> Document:
     # Section 10
     add_heading(doc, "10. Troubleshooting", 1)
     add_table(doc, ["Symptom", "Cause", "Fix"], [
+        ["UI shows Not Found", "/v1/demo/audit missing or stale image", "docker-compose up --build -d"],
         ["UI shows 404", "Old process on port 8000", "Run restart.bat, use localhost:8000"],
         ["403 Forbidden", "Secret mismatch", "Align .env with GitHub webhook secret"],
-        ["Worker not processing", "Redis down", "docker compose ps, restart Redis"],
+        ["Worker not processing", "Redis down or wrong queue", "docker-compose ps, check agentaudit queue"],
         ["Docker won't start", "Docker Desktop off", "Start Docker Desktop first"],
-        ["Celery fails on Windows", "Prefork pool", "Use --pool=solo"],
+        ["Stripe example passes", "Demo key too short", "Use 24+ chars after sk_live_"],
     ])
 
     # Section 11
     add_heading(doc, "11. Roadmap & Extensions", 1)
-    add_table(doc, ["Phase", "Feature"], [
-        ["v1.1", "GitHub App auto-registration"],
-        ["v1.2", "Custom rule packs per tenant"],
-        ["v1.3", "SARIF export for GitHub Advanced Security"],
-        ["v1.4", "HashiCorp Vault secret injection"],
-        ["v2.0", "Real database persistence"],
+    add_table(doc, ["Version", "Feature"], [
         ["v2.1", "Admin UI for policy management"],
+        ["v2.2", "Custom rule packs per tenant"],
+        ["v2.3", "SARIF export for GitHub Advanced Security"],
+        ["v2.4", "HashiCorp Vault secret injection"],
+        ["v2.5", "Jira / ServiceNow incident automation"],
     ])
 
     # Section 12
@@ -561,15 +597,18 @@ def build_document(images: dict[str, Path]) -> Document:
 
     add_heading(doc, "Background Processing", 2)
     add_table(doc, ["Technology", "Used For", "Why Chosen"], [
-        ["Celery", "execute_asynchronous_audit task", "Industry-standard async task queue"],
-        ["Redis", "Celery broker/backend", "Fast, scalable, enterprise-proven message broker"],
+        ["Celery", "process_github_webhook_audit task", "Industry-standard async task queue"],
+        ["Redis", "Celery broker/backend", "Fast, scalable message broker"],
+        ["PostgreSQL + RLS", "organizations + scan_audit_logs", "Multi-tenant isolation at DB layer"],
+        ["SQLAlchemy 2.0", "ORM + session management", "Production-grade database access"],
+        ["tree-sitter", "Python AST acceleration", "Grammar-aware syntax validation"],
     ])
 
     add_heading(doc, "Data, Frontend & Deployment", 2)
     add_table(doc, ["Technology", "Used For", "Why Chosen"], [
-        ["PostgreSQL", "Tenant config + audit metadata", "Enterprise-standard RDBMS with audit support"],
-        ["HTML + JavaScript", "Demo UI dashboard", "Zero build step, presentation-ready"],
-        ["Docker + Docker Compose", "API + Redis + Worker stack", "One-command reproducible deployment"],
+        ["PostgreSQL", "Tenant orgs + audit metadata with RLS", "Enterprise RDBMS with row-level security"],
+        ["HTML + JavaScript", "Demo UI dashboard", "Zero build step, calls /v1/demo/audit"],
+        ["Docker + Docker Compose", "postgres + redis + web + worker", "One-command reproducible deployment"],
         ["python-docx + matplotlib", "Word docs with diagrams", "Stakeholder-ready visual deliverables"],
     ])
 
@@ -594,16 +633,16 @@ def build_document(images: dict[str, Path]) -> Document:
         ["React / Vue SPA", "Unnecessary build complexity for demo UI"],
     ])
 
-    add_body(doc, "Summary: AgentAuditAI uses a Python + FastAPI + Celery + Redis architecture to deliver a fast, compliant, asynchronously audited GitHub webhook gateway. Every technology choice prioritizes speed, explainability, data minimization, and enterprise deployability.")
+    add_body(doc, "Summary: AgentAudit AI uses Python + FastAPI + Celery + Redis + PostgreSQL RLS to deliver a fast, compliant, multi-tenant GitHub webhook security platform.")
 
     doc.add_page_break()
     add_heading(doc, "Appendix A — Environment Template", 1)
     env = doc.add_paragraph(
+        "DATABASE_URL=postgresql://agentaudit:agentaudit@postgres:5432/agentaudit\n"
+        "REDIS_URL=redis://redis:6379/0\n"
         "GITHUB_WEBHOOK_SECRET=your-32-char-minimum-secret\n"
-        "DATABASE_URL=postgresql://user:pass@db-host:5432/tenant_cache\n"
-        "REDIS_URL=redis://redis-host:6379/0\n"
-        "MEMORY_RETENTION_LIMIT_MB=50\n"
-        "ENVIRONMENT=production"
+        "SECRET_KEY=your-long-random-secret-key\n"
+        "SECURITY_ENVIRONMENT=development"
     )
     for run in env.runs:
         run.font.name = "Consolas"
@@ -623,6 +662,7 @@ def main() -> None:
     images = {
         "architecture": draw_system_architecture(),
         "lifecycle": draw_request_lifecycle(),
+        "rls": draw_database_rls(),
         "enterprise": draw_enterprise_deployment(),
         "public": draw_public_company_deployment(),
         "ui": draw_ui_layout(),

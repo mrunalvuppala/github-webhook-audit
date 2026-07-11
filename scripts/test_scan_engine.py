@@ -1,4 +1,4 @@
-"""Quick validation for the Phase 2 security engine."""
+"""Quick validation for the security engine."""
 
 from app.schemas import ScanFile
 from app.services.security_engine import SecurityEngine
