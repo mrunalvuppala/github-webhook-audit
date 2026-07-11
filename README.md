@@ -26,6 +26,113 @@ flowchart LR
 
 ---
 
+## Clone and run (for anyone using the GitHub repo)
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
+- [Git](https://git-scm.com/downloads)
+
+### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/mrunalvuppala/github-webhook-audit.git
+cd github-webhook-audit
+```
+
+### Step 2 — Configure environment
+
+**Windows (PowerShell / CMD):**
+```bash
+copy .env.example .env
+```
+
+**macOS / Linux:**
+```bash
+cp .env.example .env
+```
+
+Edit `.env` if needed. Defaults work for local development.
+
+### Step 3 — Start the stack
+
+```bash
+docker compose up --build -d
+```
+
+Wait ~10 seconds, then verify:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected response: `{"status":"ok","service":"AgentAuditAI"}`
+
+### Step 4 — Open the app
+
+| What | URL |
+|---|---|
+| Demo UI | [http://localhost:8000](http://localhost:8000) |
+| API docs | [http://localhost:8000/docs](http://localhost:8000/docs) |
+| Health check | [http://localhost:8000/health](http://localhost:8000/health) |
+| AST / secret scan | `POST /v1/scan` |
+
+### Step 5 — Run tests (optional)
+
+```bash
+python scripts/test_scan_engine.py
+```
+
+### Step 6 — Install pre-commit hook (optional)
+
+Scans staged files before each commit. Requires **Git Bash** or **WSL** on Windows:
+
+```bash
+./install.sh
+```
+
+Set these in `.env` or your shell if the API is not on localhost:
+
+```env
+AGENTAUDIT_API_URL=http://localhost:8000/v1/scan
+AGENTAUDIT_OFFLINE_MODE=block
+AGENTAUDIT_TIMEOUT=10
+```
+
+### Stop the stack
+
+```bash
+docker compose down
+```
+
+---
+
+## Run locally on your machine (Windows)
+
+If you already have the repo at `C:\git\github-webhook-audit`:
+
+1. **Start Docker Desktop** (must be running).
+2. Open PowerShell in the project folder:
+   ```powershell
+   cd C:\git\github-webhook-audit
+   copy .env.example .env
+   docker compose up --build -d
+   ```
+3. **Verify** — open [http://localhost:8000/health](http://localhost:8000/health) or run:
+   ```powershell
+   python scripts\test_scan_engine.py
+   ```
+4. **Demo UI** — open [http://localhost:8000](http://localhost:8000) or double-click `start.bat`.
+5. **Pre-commit** (optional) — in Git Bash: `./install.sh`
+
+**Restart after code changes:**
+```powershell
+docker compose up --build -d
+```
+Or double-click `restart.bat`.
+
+---
+
 ## Easiest way to run (for presentations)
 
 ### Prerequisites
@@ -126,6 +233,11 @@ GITHUB_WEBHOOK_SECRET=replace-with-your-webhook-secret
 DATABASE_URL=postgresql://user:password@localhost:5432/tenant_cache
 REDIS_URL=redis://localhost:6379/0
 ENVIRONMENT=development
+
+# Pre-commit client
+AGENTAUDIT_API_URL=http://localhost:8000/v1/scan
+AGENTAUDIT_OFFLINE_MODE=block
+AGENTAUDIT_TIMEOUT=10
 ```
 
 ---
@@ -134,11 +246,18 @@ ENVIRONMENT=development
 
 ```
 app/
-├── core/config.py          # Environment configuration
-├── services/audit_engine.py # Credential scanner
+├── core/config.py           # Environment configuration
+├── schemas/scan.py          # Scan API request/response models
+├── services/
+│   ├── audit_engine.py      # Webhook diff credential scanner
+│   └── scan_engine.py       # AST + secret scan engine
 ├── workers/tasks.py         # Celery background tasks
-└── main.py                  # FastAPI webhook gateway
-scripts/demo.py              # Live presentation demo
+├── static/index.html        # Demo UI dashboard
+└── main.py                  # FastAPI gateway
+agentaudit/client.py         # Pre-commit scan client
+hooks/pre-commit             # Git hook wrapper
+install.sh                   # Pre-commit installer
+scripts/test_scan_engine.py  # Scan engine tests
 docker-compose.yml           # One-command startup
 start.bat                    # Double-click to run
 demo.bat                     # Double-click to demo

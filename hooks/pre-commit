@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# AgentAuditAI Phase 1 pre-commit hook (installed into .git/hooks/pre-commit)
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PYTHON_BIN="${AGENTAUDIT_PYTHON:-python3}"
+
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+fi
+
+exec "${PYTHON_BIN}" "${REPO_ROOT}/agentaudit/client.py"

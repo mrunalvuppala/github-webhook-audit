@@ -16,7 +16,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
+from app.schemas.scan import ScanRequest, ScanResponse
 from app.services.audit_engine import AuditResult, StatelessAuditEngine
+from app.services.scan_engine import ASTScanEngine
 from app.workers.tasks import execute_asynchronous_audit
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,9 @@ class DemoWebhookRequest(BaseModel):
     tenant_id: str = "demo-tenant"
     installation_id: str = "4242"
     diff: str = Field(description="Unified diff content to queue for audit.")
+
+
+_scan_engine = ASTScanEngine()
 
 
 def _verify_github_signature(
@@ -96,8 +101,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="AgentAuditAI",
-    description="GitHub webhook gateway with asynchronous credential auditing.",
-    version="1.0.0",
+    description="High-performance AST and secret scanning engine with GitHub webhook gateway.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -149,6 +154,12 @@ async def demo_webhook(request: DemoWebhookRequest) -> dict[str, str]:
         "tenant_id": request.tenant_id,
         "installation_id": request.installation_id,
     }
+
+
+@app.post("/v1/scan", response_model=ScanResponse)
+async def scan_files(request: ScanRequest) -> ScanResponse:
+    """High-throughput AST and secret scan endpoint for pre-commit and CI clients."""
+    return _scan_engine.scan_files(request.files)
 
 
 @app.post(
