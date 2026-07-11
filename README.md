@@ -1,279 +1,354 @@
-# AgentAuditAI
+# AgentAudit AI — Phase 2 Multi-Tenant Infrastructure
 
-**GitHub webhook gateway that asynchronously scans code diffs for leaked credentials.**
+**Production-grade, multi-tenant GitHub webhook security auditing platform with PostgreSQL Row-Level Security, Redis-backed Celery workers, and AST/secret scanning.**
 
-Built for compliance-focused teams who need fast webhook verification, background auditing, and zero retention of sensitive diff content.
+> **Architecture designed, engineered, and maintained by Naga Sai Mrunal Vuppala.**
 
 ---
 
-## What it does
+## System Topology
 
-```mermaid
-flowchart LR
-    GH[GitHub Webhook] --> API[FastAPI Gateway]
-    API -->|HMAC Verify| API
-    API -->|202 Accepted| GH
-    API -->|Queue Task| Redis[(Redis)]
-    Redis --> Worker[Celery Worker]
-    Worker --> Engine[Stateless Audit Engine]
-    Engine --> DB[(Metadata Store)]
+```
+                         INTERNET / GITHUB
+                                 |
+                                 |  HTTPS POST (signed payload)
+                                 v
++---------------------------------------------------------------------+
+|                        DOCKER COMPOSE HOST                          |
+|                                                                     |
+|   +-------------------+       +-------------------+                   |
+|   |   GITHUB APP /    |       |   DEVELOPER CLI   |                   |
+|   |   WEBHOOK SOURCE  |       |   curl / pre-commit|                  |
+|   +---------+---------+       +---------+---------+                   |
+|             |                           |                           |
+|             | X-Hub-Signature-256       | /v1/scan                  |
+|             v                           v                           |
+|   +-------------------------------------------------------------+   |
+|   |                    FASTAPI WEB SERVICE (:8000)              |   |
+|   |  +-------------------------------------------------------+  |   |
+|   |  | Latency Telemetry Middleware (X-Process-Time-Ms)      |  |   |
+|   |  +-------------------------------------------------------+  |   |
+|   |  | POST /v1/webhooks/github                              |  |   |
+|   |  |   1. Read raw body                                    |  |   |
+|   |  |   2. HMAC-SHA256 constant-time verify                 |  |   |
+|   |  |   3. Parse installation_id                            |  |   |
+|   |  |   4. celery.delay()  -----------+                     |  |   |
+|   |  |   5. Return 202 Accepted (<50ms)|                     |  |   |
+|   |  +---------------------------------|---------------------+  |   |
+|   +------------------------------------|------------------------+   |
+|                                        |                            |
+|                                        | task JSON envelope         |
+|                                        v                            |
+|                          +-------------------------+                |
+|                          |   REDIS BROKER (:6379)  |                |
+|                          |   Celery queue + results|                |
+|                          +------------+------------+                |
+|                                       |                             |
+|                                       | BRPOP / task dispatch         |
+|                                       v                             |
+|   +-------------------------------------------------------------+   |
+|   |                  CELERY WORKER POOL                         |   |
+|   |  +-------------------------------------------------------+  |   |
+|   |  | process_github_webhook_audit                          |  |   |
+|   |  |   1. Resolve / create Organization                    |  |   |
+|   |  |   2. SET LOCAL app.current_organization_id = :org_id  |  |   |
+|   |  |   3. SecurityEngine.scan_diff()                       |  |   |
+|   |  |   4. INSERT scan_audit_logs (RLS enforced)            |  |   |
+|   |  +-------------------------------------------------------+  |   |
+|   +-----------------------------|-------------------------------+   |
+|                                 |                                   |
+|                                 | SQL (tenant-scoped session)       |
+|                                 v                                   |
+|                    +---------------------------+                    |
+|                    |  POSTGRESQL 16 (:5432)    |                    |
+|                    |  organizations            |                    |
+|                    |  scan_audit_logs + RLS    |                    |
+|                    +---------------------------+                    |
++---------------------------------------------------------------------+
 ```
 
-1. **GitHub** sends a signed webhook to `/v1/webhooks/github`
-2. **FastAPI** verifies the HMAC signature and immediately returns `202 Accepted`
-3. **Celery worker** scans the diff for AWS, Stripe, and GitLab secrets
-4. **Only metadata** is logged and stored — never the raw code
+### Request lifecycle summary
+
+| Stage | Component | Action | Target latency |
+|---|---|---|---|
+| 1 | GitHub | Delivers signed webhook | — |
+| 2 | FastAPI `web` | HMAC verify + enqueue | < 50 ms |
+| 3 | Redis | Stores Celery task | < 5 ms |
+| 4 | Celery `worker` | Scan diff + persist metadata | async |
+| 5 | PostgreSQL | Tenant-isolated audit log row | async |
 
 ---
 
-## Clone and run (for anyone using the GitHub repo)
+## Database Isolation — PostgreSQL RLS
+
+AgentAudit AI enforces **multi-tenant isolation** at the database layer using PostgreSQL Row-Level Security (RLS) on `scan_audit_logs`.
+
+### Runtime tenant binding
+
+Before any mutation or read against `scan_audit_logs`, the Celery worker executes:
+
+```sql
+SET LOCAL app.current_organization_id = '<organization-uuid>';
+```
+
+`SET LOCAL` scopes the setting to the current transaction, preventing cross-tenant leakage between pooled connections.
+
+### RLS policy
+
+```sql
+ALTER TABLE scan_audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scan_audit_logs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_policy ON scan_audit_logs
+USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+```
+
+### Schema mapping
+
+| Table | Column | Type | Purpose |
+|---|---|---|---|
+| `organizations` | `id` | `UUID` PK | Canonical tenant identifier |
+| `organizations` | `org_name` | `VARCHAR(255)` | GitHub org / account display name |
+| `organizations` | `github_installation_id` | `VARCHAR(64)` UNIQUE | Maps GitHub App installation to tenant |
+| `organizations` | `author_metadata` | `JSONB` | Default `{"creator": "Naga Sai Mrunal Vuppala"}` |
+| `organizations` | `created_at` | `TIMESTAMPTZ` | Tenant provisioning timestamp |
+| `scan_audit_logs` | `id` | `UUID` PK | Immutable audit record identifier |
+| `scan_audit_logs` | `organization_id` | `UUID` FK (indexed) | **RLS isolation key** |
+| `scan_audit_logs` | `repository_name` | `VARCHAR(512)` | `owner/repo` from webhook payload |
+| `scan_audit_logs` | `pull_request_number` | `INTEGER` | PR number when applicable |
+| `scan_audit_logs` | `commit_sha` | `VARCHAR(64)` | Commit SHA when applicable |
+| `scan_audit_logs` | `scan_status` | `VARCHAR(32)` | `passed` or `blocked` |
+| `scan_audit_logs` | `vulnerabilities_found` | `JSONB` | Structured secret/AST findings |
+| `scan_audit_logs` | `metadata_summary` | `JSONB` | Violation counts, event metadata |
+| `scan_audit_logs` | `author_metadata` | `JSONB` | Default `{"creator": "Naga Sai Mrunal Vuppala"}` |
+| `scan_audit_logs` | `created_at` | `TIMESTAMPTZ` | Audit timestamp |
+
+### RLS evaluation flow
+
+| Step | Actor | Operation | RLS outcome |
+|---|---|---|---|
+| 1 | Celery worker | `SET LOCAL app.current_organization_id` | Binds session to tenant UUID |
+| 2 | PostgreSQL | Evaluates `USING` clause on `SELECT` | Returns only matching `organization_id` rows |
+| 3 | PostgreSQL | Evaluates policy on `INSERT` | Permits writes only when `organization_id` matches setting |
+| 4 | Other tenants | Attempt cross-tenant `SELECT` | **Zero rows returned** (silent isolation) |
+
+---
+
+## Local Deployment Runbook
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- [Git](https://git-scm.com/downloads)
+- Docker Desktop (or Docker Engine + Compose v2)
+- Git
+- Python 3.12+ (optional, for local script tests outside containers)
 
-### Step 1 — Clone the repository
+### 1. Clone and configure
 
 ```bash
 git clone https://github.com/mrunalvuppala/github-webhook-audit.git
 cd github-webhook-audit
+cp .env.example .env    # Windows: copy .env.example .env
 ```
 
-### Step 2 — Configure environment
+### 2. Build and start the four-service stack
 
-**Windows (PowerShell / CMD):**
 ```bash
-copy .env.example .env
+docker-compose up --build -d
 ```
 
-**macOS / Linux:**
-```bash
-cp .env.example .env
-```
+Services started:
 
-Edit `.env` if needed. Defaults work for local development.
+| Service | Image / build | Port | Role |
+|---|---|---|---|
+| `postgres` | `postgres:16-alpine` | 5432 | Multi-tenant metadata store |
+| `redis` | `redis:alpine` | 6379 | Celery broker + result backend |
+| `web` | project `Dockerfile` | 8000 | FastAPI ingress |
+| `worker` | project `Dockerfile` | — | Celery audit processor |
 
-### Step 3 — Start the stack
-
-```bash
-docker compose up --build -d
-```
-
-Wait ~10 seconds, then verify:
+### 3. Verify service health
 
 ```bash
+docker-compose ps
 curl http://localhost:8000/health
 ```
 
-Expected response: `{"status":"ok","service":"AgentAuditAI"}`
+Expected health response:
 
-### Step 4 — Open the app
+```json
+{
+  "status": "ok",
+  "service": "AgentAuditAI",
+  "database": "connected",
+  "redis": "connected",
+  "environment": "development"
+}
+```
 
-| What | URL |
-|---|---|
-| Demo UI | [http://localhost:8000](http://localhost:8000) |
-| API docs | [http://localhost:8000/docs](http://localhost:8000/docs) |
-| Health check | [http://localhost:8000/health](http://localhost:8000/health) |
-| AST / secret scan | `POST /v1/scan` |
-
-### Step 5 — Run tests (optional)
+### 4. Inspect live logs
 
 ```bash
+docker-compose logs web --tail 50
+docker-compose logs worker --tail 50
+docker-compose logs postgres --tail 20
+docker-compose logs redis --tail 20
+```
+
+Follow logs in real time:
+
+```bash
+docker-compose logs -f web worker
+```
+
+### 5. Run scan engine validation
+
+```bash
+pip install -r requirements.txt
 python scripts/test_scan_engine.py
 ```
 
-### Step 6 — Install pre-commit hook (optional)
-
-Scans staged files before each commit. Requires **Git Bash** or **WSL** on Windows:
+### 6. Stop the stack
 
 ```bash
-./install.sh
+docker-compose down
 ```
 
-Set these in `.env` or your shell if the API is not on localhost:
-
-```env
-AGENTAUDIT_API_URL=http://localhost:8000/v1/scan
-AGENTAUDIT_OFFLINE_MODE=block
-AGENTAUDIT_TIMEOUT=10
-```
-
-### Stop the stack
+Persisted PostgreSQL data survives in the `postgres_data` volume until removed:
 
 ```bash
-docker compose down
+docker-compose down -v
 ```
 
 ---
 
-## Run locally on your machine (Windows)
+## API Testing Suite
 
-If you already have the repo at `C:\git\github-webhook-audit`:
+Set your webhook secret (must match `.env`):
 
-1. **Start Docker Desktop** (must be running).
-2. Open PowerShell in the project folder:
-   ```powershell
-   cd C:\git\github-webhook-audit
-   copy .env.example .env
-   docker compose up --build -d
-   ```
-3. **Verify** — open [http://localhost:8000/health](http://localhost:8000/health) or run:
-   ```powershell
-   python scripts\test_scan_engine.py
-   ```
-4. **Demo UI** — open [http://localhost:8000](http://localhost:8000) or double-click `start.bat`.
-5. **Pre-commit** (optional) — in Git Bash: `./install.sh`
+```bash
+export GITHUB_WEBHOOK_SECRET="replace-with-your-webhook-secret"
+```
 
-**Restart after code changes:**
+### Health probe
+
+```bash
+curl -s http://localhost:8000/health | python -m json.tool
+```
+
+### Synchronous scan endpoint
+
+```bash
+curl -s -X POST http://localhost:8000/v1/scan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "files": [
+      {"path": "unsafe.py", "content": "result = eval(user_input)\n"}
+    ]
+  }' | python -m json.tool
+```
+
+### Signed GitHub webhook (async pipeline)
+
+**Linux / macOS / Git Bash:**
+
+```bash
+BODY='{"installation":{"id":4242,"account":{"login":"acme-corp"}},"repository":{"full_name":"acme-corp/payments"},"pull_request":{"number":17},"after":"abc123def456","diff":"+API_KEY = \"AKIAIOSFODNN7EXAMPLE\"\n"}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | awk '{print $2}')"
+
+curl -i -X POST http://localhost:8000/v1/webhooks/github \
+  -H "Content-Type: application/json" \
+  -H "X-Hub-Signature-256: $SIG" \
+  -d "$BODY"
+```
+
+**PowerShell:**
+
 ```powershell
-docker compose up --build -d
-```
-Or double-click `restart.bat`.
-
----
-
-## Easiest way to run (for presentations)
-
-### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-
-### Step 1 — Start everything (one double-click)
-
-```
-start.bat
+$secret = "replace-with-your-webhook-secret"
+$body = '{"installation":{"id":4242,"account":{"login":"acme-corp"}},"repository":{"full_name":"acme-corp/payments"},"pull_request":{"number":17},"after":"abc123def456","diff":"+API_KEY = \"AKIAIOSFODNN7EXAMPLE\"\n"}'
+$hmac = New-Object System.Security.Cryptography.HMACSHA256
+$hmac.Key = [Text.Encoding]::UTF8.GetBytes($secret)
+$hash = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($body))
+$sig = "sha256=" + (-join ($hash | ForEach-Object { $_.ToString("x2") }))
+Invoke-WebRequest -Uri "http://localhost:8000/v1/webhooks/github" -Method POST `
+  -Headers @{"X-Hub-Signature-256"=$sig; "Content-Type"="application/json"} `
+  -Body $body
 ```
 
-Or from terminal:
+Expected response: **HTTP 202 Accepted** with `X-Process-Time-Ms` header.
+
+Confirm worker processing:
 
 ```bash
-docker compose up --build
+docker-compose logs worker --tail 30
 ```
 
-### Step 2 — Open the demo UI (best for presentations)
-
-[http://localhost:8000](http://localhost:8000)
-
-Click the example buttons, then **Run audit** for instant PASS/FAIL results in the browser.
-
-Or use the API docs:
-
-[http://localhost:8000/docs](http://localhost:8000/docs)
-
-### Step 3 — Run the live demo
-
-Double-click:
-
-```
-demo.bat
-```
-
-Or:
+### Development demo webhook (no signature required)
 
 ```bash
-python scripts/demo.py
-```
-
-The demo sends 3 webhook scenarios and shows HTTP responses. Audit results appear in the **worker** terminal.
-
----
-
-## Presentation cheat sheet
-
-| What to show | URL / Command |
-|---|---|
-| **Demo UI dashboard** | [http://localhost:8000](http://localhost:8000) |
-| Interactive API docs | [http://localhost:8000/docs](http://localhost:8000/docs) |
-| Health check | [http://localhost:8000/health](http://localhost:8000/health) |
-| Webhook endpoint | `POST /v1/webhooks/github` |
-| Live demo script | `demo.bat` |
-| Worker audit logs | Docker terminal for `worker` service |
-
-### Talking points
-
-- **Security first** — HMAC-SHA256 verification before any processing
-- **Fast response** — GitHub gets `202` immediately; audit runs in background
-- **Compliance** — diff content is never logged, stored, or retained in memory
-- **Detects** — AWS keys, Stripe secrets, GitLab tokens
-
----
-
-## Manual setup (without Docker)
-
-```bash
-cd C:\git\github-webhook-audit
-pip install -r requirements.txt
-copy .env.example .env
-```
-
-**Terminal 1 — Redis:**
-```bash
-docker run -d -p 6379:6379 redis:alpine
-```
-
-**Terminal 2 — Worker:**
-```bash
-python -m celery -A app.workers.tasks.celery_app worker --loglevel=info --pool=solo
-```
-
-**Terminal 3 — API:**
-```bash
-python -m uvicorn app.main:app --reload --port 8000
+curl -s -X POST http://localhost:8000/v1/demo/webhook \
+  -H "Content-Type: application/json" \
+  -d '{
+    "installation_id": "4242",
+    "repository_name": "acme-corp/payments",
+    "pull_request_number": 17,
+    "commit_sha": "abc123def456",
+    "diff": "+stripe_key = \"sk_live_abcdefghijklmnopqrstuv\"\n"
+  }' | python -m json.tool
 ```
 
 ---
 
-## Configuration
+## Configuration reference
 
-Copy `.env.example` to `.env`:
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `REDIS_URL` | Yes | `redis://localhost:6379/0` | Celery broker/backend |
+| `GITHUB_WEBHOOK_SECRET` | Yes | — | HMAC signing secret for GitHub webhooks |
+| `SECRET_KEY` | Yes | — | Application cryptographic secret |
+| `SECURITY_ENVIRONMENT` | No | `development` | `development` enables demo endpoints |
 
-```env
-GITHUB_WEBHOOK_SECRET=replace-with-your-webhook-secret
-DATABASE_URL=postgresql://user:password@localhost:5432/tenant_cache
-REDIS_URL=redis://localhost:6379/0
-ENVIRONMENT=development
+---
 
-# Pre-commit client
-AGENTAUDIT_API_URL=http://localhost:8000/v1/scan
-AGENTAUDIT_OFFLINE_MODE=block
-AGENTAUDIT_TIMEOUT=10
+## Project structure (Phase 2)
+
+```
+.
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── README.md
+├── LICENSE
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── config.py
+│   ├── database.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── tasks.py
+│   └── services/
+│       ├── __init__.py
+│       ├── ast_parser.py
+│       └── security_engine.py
+└── alembic/
+    └── env.py
 ```
 
 ---
 
-## Project structure
+## License
 
-```
-app/
-├── core/config.py           # Environment configuration
-├── schemas/scan.py          # Scan API request/response models
-├── services/
-│   ├── audit_engine.py      # Webhook diff credential scanner
-│   └── scan_engine.py       # AST + secret scan engine
-├── workers/tasks.py         # Celery background tasks
-├── static/index.html        # Demo UI dashboard
-└── main.py                  # FastAPI gateway
-agentaudit/client.py         # Pre-commit scan client
-hooks/pre-commit             # Git hook wrapper
-install.sh                   # Pre-commit installer
-scripts/test_scan_engine.py  # Scan engine tests
-docker-compose.yml           # One-command startup
-start.bat                    # Double-click to run
-demo.bat                     # Double-click to demo
-```
+Licensed under the **Business Source License 1.1** by **Naga Sai Mrunal Vuppala (Founder, AgentAudit AI)**.
+
+- **Change Date:** 2029-07-10
+- **Change License:** Apache License, Version 2.0
+- **Additional Use Grant:** Competing commercial cloud multi-tenant SaaS deployments are prohibited.
+
+See [LICENSE](LICENSE) for full terms.
 
 ---
 
-## Documentation
+## Architectural Credit
 
-Full technical and enterprise integration guide:
-
-- **[docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md)** — architecture, testing, enterprise & public company integration
-- Double-click **`download-docs.bat`** to copy the document to your Desktop
-
----
-
-## GitHub repo
-
-[github.com/mrunalvuppala/github-webhook-audit](https://github.com/mrunalvuppala/github-webhook-audit)
+**Architecture designed, engineered, and maintained by Naga Sai Mrunal Vuppala.**

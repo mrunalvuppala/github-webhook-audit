@@ -1,11 +1,11 @@
-"""Quick validation for the AST scan engine."""
+"""Quick validation for the Phase 2 security engine."""
 
-from app.schemas.scan import ScanFile
-from app.services.scan_engine import ASTScanEngine
+from app.schemas import ScanFile
+from app.services.security_engine import SecurityEngine
 
 
 def main() -> None:
-    engine = ASTScanEngine()
+    engine = SecurityEngine()
 
     blocked = engine.scan_files(
         [ScanFile(path="config.py", content='AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n')]

@@ -1,4 +1,7 @@
-"""FastAPI gateway for GitHub webhook ingestion and asynchronous audit dispatch."""
+"""FastAPI ingress gateway for AgentAudit AI Phase 2 multi-tenant infrastructure.
+
+Architecture designed, engineered, and maintained by Naga Sai Mrunal Vuppala.
+"""
 
 from __future__ import annotations
 
@@ -6,36 +9,33 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from pathlib import Path
-
+import redis
 from fastapi import FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from app.core.config import Settings, get_settings
-from app.schemas.scan import ScanRequest, ScanResponse
-from app.services.audit_engine import AuditResult, StatelessAuditEngine
-from app.services.scan_engine import ASTScanEngine
-from app.workers.tasks import execute_asynchronous_audit
+from app.config import Settings, get_settings
+from app.database import check_database_connection, initialize_database
+from app.schemas import HealthResponse, ScanRequest, ScanResponse, WebhookAcceptedResponse
+from app.services.security_engine import SecurityEngine
+from app.tasks import process_github_webhook_audit
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-
-
-class DemoAuditRequest(BaseModel):
-    diff: str = Field(description="Unified diff content to inspect.")
+_security_engine = SecurityEngine()
 
 
 class DemoWebhookRequest(BaseModel):
-    tenant_id: str = "demo-tenant"
     installation_id: str = "4242"
     diff: str = Field(description="Unified diff content to queue for audit.")
-
-
-_scan_engine = ASTScanEngine()
+    repository_name: str = "demo-org/demo-repo"
+    pull_request_number: int | None = None
+    commit_sha: str | None = None
 
 
 def _verify_github_signature(
@@ -57,27 +57,6 @@ def _verify_github_signature(
     return hmac.compare_digest(expected_signature, signature_header)
 
 
-def _extract_tenant_id(payload: dict[str, Any]) -> str:
-    if tenant_id := payload.get("tenant_id"):
-        return str(tenant_id)
-
-    installation = payload.get("installation") or {}
-    account = installation.get("account") or {}
-    if account_id := account.get("login") or account.get("id"):
-        return str(account_id)
-
-    organization = payload.get("organization") or {}
-    if org_id := organization.get("login") or organization.get("id"):
-        return str(org_id)
-
-    repository = payload.get("repository") or {}
-    owner = repository.get("owner") or {}
-    if owner_id := owner.get("login") or owner.get("id"):
-        return str(owner_id)
-
-    return "unknown"
-
-
 def _extract_installation_id(payload: dict[str, Any]) -> str:
     installation = payload.get("installation") or {}
     if installation_id := installation.get("id"):
@@ -85,81 +64,100 @@ def _extract_installation_id(payload: dict[str, Any]) -> str:
     return "unknown"
 
 
-def _extract_diff_payload(payload: dict[str, Any]) -> str:
-    if isinstance(payload.get("diff"), str):
-        return payload["diff"]
-    if isinstance(payload.get("diff_payload"), str):
-        return payload["diff_payload"]
-    return ""
+def _check_redis_connection(redis_url: str) -> bool:
+    try:
+        client = redis.Redis.from_url(redis_url, socket_connect_timeout=2)
+        return bool(client.ping())
+    except Exception as exc:
+        logger.error("Redis connectivity check failed: %s", exc)
+        return False
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    get_settings()
+    settings = get_settings()
+    initialize_database()
+    logger.info(
+        "AgentAudit AI started environment=%s database_url_configured=%s",
+        settings.security_environment,
+        bool(settings.database_url),
+    )
     yield
 
 
 app = FastAPI(
-    title="AgentAuditAI",
-    description="High-performance AST and secret scanning engine with GitHub webhook gateway.",
+    title="AgentAudit AI",
+    description="Production-grade multi-tenant GitHub webhook security auditing platform.",
     version="2.0.0",
     lifespan=lifespan,
 )
 
 
-@app.get("/health")
-async def health_check() -> dict[str, str]:
-    """Simple health endpoint for demos and load balancers."""
-    return {"status": "ok", "service": "AgentAuditAI"}
+@app.middleware("http")
+async def latency_telemetry_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.2f}"
+    response.headers["X-AgentAudit-Service"] = "AgentAuditAI"
+    return response
 
 
-@app.get("/")
-async def dashboard() -> FileResponse:
-    """Presentation dashboard for live credential audit demos."""
-    return FileResponse(STATIC_DIR / "index.html")
-
-
-@app.post("/v1/demo/audit", response_model=AuditResult)
-async def demo_audit(request: DemoAuditRequest) -> AuditResult:
-    """Run a synchronous audit for the browser demo UI."""
+@app.get("/health", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
     settings = get_settings()
-    if not settings.is_development:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Demo endpoints are only available in development mode",
-        )
+    database_ok = check_database_connection()
+    redis_ok = _check_redis_connection(settings.redis_url)
 
-    engine = StatelessAuditEngine()
-    return engine.inspect_diff(request.diff)
-
-
-@app.post("/v1/demo/webhook")
-async def demo_webhook(request: DemoWebhookRequest) -> dict[str, str]:
-    """Queue a demo payload through the real webhook + Celery path."""
-    settings = get_settings()
-    if not settings.is_development:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Demo endpoints are only available in development mode",
-        )
-
-    execute_asynchronous_audit.delay(
-        request.tenant_id,
-        request.installation_id,
-        request.diff,
+    return HealthResponse(
+        status="ok" if database_ok and redis_ok else "degraded",
+        service="AgentAuditAI",
+        database="connected" if database_ok else "unavailable",
+        redis="connected" if redis_ok else "unavailable",
+        environment=settings.security_environment,
     )
 
-    return {
-        "status": "accepted",
-        "tenant_id": request.tenant_id,
-        "installation_id": request.installation_id,
-    }
+
+@app.get("/", response_model=None)
+async def dashboard():
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return JSONResponse(
+        {
+            "service": "AgentAuditAI",
+            "version": "2.0.0",
+            "docs": "/docs",
+            "health": "/health",
+        }
+    )
 
 
 @app.post("/v1/scan", response_model=ScanResponse)
 async def scan_files(request: ScanRequest) -> ScanResponse:
-    """High-throughput AST and secret scan endpoint for pre-commit and CI clients."""
-    return _scan_engine.scan_files(request.files)
+    return _security_engine.scan_files(request.files)
+
+
+@app.post("/v1/demo/webhook", response_model=WebhookAcceptedResponse)
+async def demo_webhook(request: DemoWebhookRequest) -> WebhookAcceptedResponse:
+    settings = get_settings()
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Demo endpoints are only available in development mode",
+        )
+
+    payload = {
+        "installation": {"id": request.installation_id},
+        "repository": {"full_name": request.repository_name},
+        "pull_request": {"number": request.pull_request_number},
+        "after": request.commit_sha,
+        "diff": request.diff,
+        "action": "demo",
+    }
+
+    process_github_webhook_audit.delay(request.installation_id, payload)
+    return WebhookAcceptedResponse()
 
 
 @app.post(
@@ -193,23 +191,14 @@ async def github_webhook(request: Request) -> Response:
             detail="Webhook payload must be a JSON object",
         )
 
-    tenant_id = _extract_tenant_id(payload)
     installation_id = _extract_installation_id(payload)
-    diff_payload = _extract_diff_payload(payload)
+    process_github_webhook_audit.delay(installation_id, payload)
 
-    execute_asynchronous_audit.delay(tenant_id, installation_id, diff_payload)
-
-    logger.info(
-        "GitHub webhook accepted tenant_id=%s installation_id=%s",
-        tenant_id,
-        installation_id,
-    )
-
+    logger.info("GitHub webhook accepted installation_id=%s", installation_id)
     return Response(status_code=status.HTTP_202_ACCEPTED)
 
 
 def bootstrap() -> Settings:
-    """Load configuration and run startup safety checks."""
     return get_settings()
 
 

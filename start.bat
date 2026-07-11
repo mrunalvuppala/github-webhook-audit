@@ -16,7 +16,7 @@ if not exist ".env" (
     echo.
 )
 
-echo Starting Redis + API + Worker with Docker ...
+echo Starting PostgreSQL + Redis + Web + Worker with Docker ...
 echo.
 echo  API docs:  http://localhost:8000/docs
 echo  Webhook:   http://localhost:8000/v1/webhooks/github

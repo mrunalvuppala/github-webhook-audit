@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Iterable
 
-from app.schemas.scan import ScanFile, ScanResponse
+from app.schemas import ScanFile, ScanResponse
 
 # Optional tree-sitter acceleration for Python grammar-aware parsing.
 try:

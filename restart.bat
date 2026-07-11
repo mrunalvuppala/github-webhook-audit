@@ -20,7 +20,7 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING
 )
 
 echo.
-echo Starting Redis + API + Worker...
+echo Starting PostgreSQL + Redis + Web + Worker...
 echo.
 echo  UI:      http://localhost:8000
 echo  API docs http://localhost:8000/docs
