@@ -11,6 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.copyright import AUTHOR, COPYRIGHT
 from app.models import AUTHOR_METADATA_DEFAULT
 
 
@@ -35,6 +36,8 @@ class HealthResponse(BaseModel):
     database: str
     redis: str
     environment: str
+    author: str = AUTHOR
+    copyright: str = COPYRIGHT
 
 
 class OrganizationRead(BaseModel):

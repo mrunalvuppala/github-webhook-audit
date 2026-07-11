@@ -13,7 +13,9 @@ from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-AUTHOR_METADATA_DEFAULT: dict[str, str] = {"creator": "Naga Sai Mrunal Vuppala"}
+from app.copyright import AUTHOR
+
+AUTHOR_METADATA_DEFAULT: dict[str, str] = {"creator": AUTHOR}
 
 
 def utcnow() -> datetime:

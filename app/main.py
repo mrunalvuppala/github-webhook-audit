@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.copyright import AUTHOR, COPYRIGHT, CREDIT_LINE, PRODUCT_NAME
 from app.database import check_database_connection, initialize_database
 from app.schemas import (
     DemoAuditRequest,
@@ -115,9 +116,15 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="AgentAudit AI",
-    description="Production-grade multi-tenant GitHub webhook security auditing platform.",
+    title=PRODUCT_NAME,
+    description=(
+        f"{CREDIT_LINE}\n\n"
+        f"{COPYRIGHT}\n\n"
+        "Production-grade multi-tenant GitHub webhook security auditing platform."
+    ),
     version="2.0.0",
+    contact={"name": AUTHOR},
+    license_info={"name": "Business Source License 1.1"},
     lifespan=lifespan,
 )
 
@@ -129,6 +136,8 @@ async def latency_telemetry_middleware(request: Request, call_next):
     elapsed_ms = (time.perf_counter() - start) * 1000
     response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.2f}"
     response.headers["X-AgentAudit-Service"] = "AgentAuditAI"
+    response.headers["X-Copyright"] = COPYRIGHT
+    response.headers["X-Author"] = AUTHOR
     return response
 
 
@@ -144,6 +153,8 @@ async def health_check() -> HealthResponse:
         database="connected" if database_ok else "unavailable",
         redis="connected" if redis_ok else "unavailable",
         environment=settings.security_environment,
+        author=AUTHOR,
+        copyright=COPYRIGHT,
     )
 
 
@@ -156,6 +167,9 @@ async def dashboard():
         {
             "service": "AgentAuditAI",
             "version": "2.0.0",
+            "author": AUTHOR,
+            "copyright": COPYRIGHT,
+            "credit": CREDIT_LINE,
             "docs": "/docs",
             "health": "/health",
         }

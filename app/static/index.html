@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AgentAuditAI</title>
+  <meta name="author" content="Naga Sai Mrunal Vuppala" />
+  <meta name="copyright" content="Copyright (c) 2026 Naga Sai Mrunal Vuppala" />
+  <title>AgentAudit AI — Naga Sai Mrunal Vuppala</title>
   <style>
     :root {
       --bg: #0b1020;
@@ -69,14 +71,24 @@
       border-left: 3px solid var(--warn); padding: 8px 10px; margin: 8px 0; background: rgba(245,158,11,0.08);
     }
     .violation.high { border-left-color: var(--fail); background: rgba(239,68,68,0.08); }
+    .footer {
+      margin-top: 32px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.7;
+      text-align: center;
+    }
+    .footer strong { color: #b9d0ff; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="hero">
       <div>
-        <h1>AgentAuditAI</h1>
-        <div class="subtitle">Scan code diffs for leaked credentials — live demo dashboard</div>
+        <h1>AgentAudit AI</h1>
+        <div class="subtitle">Scan code diffs for leaked credentials — by <strong>Naga Sai Mrunal Vuppala</strong></div>
       </div>
       <div class="badge" id="healthBadge">Checking API...</div>
     </div>
@@ -112,6 +124,12 @@
         </div>
       </div>
     </div>
+
+    <footer class="footer">
+      <div><strong>© 2026 Naga Sai Mrunal Vuppala</strong> — All rights reserved.</div>
+      <div>Architecture designed, engineered, and maintained by Naga Sai Mrunal Vuppala.</div>
+      <div>AgentAudit AI · Business Source License 1.1</div>
+    </footer>
   </div>
 
   <script>
