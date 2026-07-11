@@ -98,8 +98,8 @@
           <button class="btn-secondary" id="queueWebhookBtn">Queue via webhook flow</button>
         </div>
         <p class="meta" style="margin-top:12px;">
-          <strong>Run audit</strong> shows instant results in the UI.
-          <strong>Queue via webhook flow</strong> sends the payload through the real GitHub webhook + Celery path.
+          <strong>Run audit</strong> uses the production <code>/v1/scan</code> API (works in cloud and local).
+          <strong>Queue via webhook flow</strong> requires development mode or a signed GitHub webhook.
         </p>
       </div>
 
@@ -136,6 +136,30 @@
       }
     }
 
+    function diffToScanFiles(diff) {
+      const added = [];
+      for (const rawLine of diff.split("\n")) {
+        if (rawLine.startsWith("+") && !rawLine.startsWith("+++")) {
+          added.push(rawLine.slice(1));
+        }
+      }
+      const content = added.length ? added.join("\n") : diff;
+      return [{ path: "changed.py", content }];
+    }
+
+    function scanResponseToAuditResult(scan) {
+      const violations = (scan.violations || []).map((v) => ({
+        line: v.line,
+        rule: v.rule,
+        risk_level: v.category === "secret" ? "high" : "medium",
+      }));
+      return {
+        status: scan.status === "blocked" ? "FAIL" : "PASS",
+        violations,
+        high_risk_detected: violations.some((v) => v.risk_level === "high"),
+      };
+    }
+
     function renderAuditResult(data) {
       const statusClass = data.status === "PASS" ? "pass" : "fail";
       let html = `<div class="status ${statusClass}">${data.status}</div>`;
@@ -163,17 +187,18 @@
     document.getElementById("runAuditBtn").addEventListener("click", async () => {
       resultPanel.textContent = "Running audit...";
       try {
-        const res = await fetch("/v1/demo/audit", {
+        const files = diffToScanFiles(diffInput.value);
+        const res = await fetch("/v1/scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ diff: diffInput.value }),
+          body: JSON.stringify({ files }),
         });
         const data = await res.json();
         if (!res.ok) {
           const detail = typeof data.detail === "string" ? data.detail : `Request failed (${res.status})`;
           throw new Error(detail);
         }
-        renderAuditResult(data);
+        renderAuditResult(scanResponseToAuditResult(data));
       } catch (err) {
         resultPanel.textContent = `Error: ${err.message}`;
       }
@@ -203,7 +228,14 @@
           `${data.message || ""}\n\n` +
           `Check the Celery worker terminal for background audit results.`;
       } catch (err) {
-        resultPanel.textContent = `Error: ${err.message}`;
+        if (err.message.includes("development mode")) {
+          resultPanel.textContent =
+            "Queue via webhook is disabled in production.\n\n" +
+            "Use a signed POST to /v1/webhooks/github instead,\n" +
+            "or set SECURITY_ENVIRONMENT=development on Railway for demo mode.";
+        } else {
+          resultPanel.textContent = `Error: ${err.message}`;
+        }
       }
     });
 
